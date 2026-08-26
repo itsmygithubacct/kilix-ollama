@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Source-tree and installed launcher for Kilix Ollama."""
+
+from pathlib import Path
+import os
+import sys
+
+
+launcher = Path(__file__).resolve()
+root = launcher.parent
+source = root / "src"
+if not source.is_dir():
+    source = root.parent / "lib" / "kilix-ollama"
+sys.path.insert(0, str(source))
+os.environ.setdefault("KILIX_OLLAMA_LAUNCHER", str(launcher))
+
+from kilix_ollama.cli import main  # noqa: E402
+
+
+raise SystemExit(main())
