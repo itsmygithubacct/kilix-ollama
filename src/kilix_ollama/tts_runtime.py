@@ -8,6 +8,7 @@ as an independently testable correctness fallback.
 
 from __future__ import annotations
 
+import array
 from collections.abc import Callable
 from dataclasses import dataclass
 import io
@@ -20,6 +21,7 @@ import signal
 import stat
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -53,6 +55,8 @@ MAX_AUDIO_SECONDS = 120.0
 SAMPLE_RATE = 24_000
 CHANNELS = 1
 SAMPLE_WIDTH = 2
+MIN_PCM_RMS = 256.0
+MIN_PCM_PEAK = 1_024
 DEFAULT_QUEUE_TIMEOUT = 30.0
 DEFAULT_RUN_TIMEOUT = 30.0
 _POLL_SECONDS = 0.02
@@ -190,6 +194,20 @@ def _terminate(process: subprocess.Popen[bytes], *, timeout: float = 1.0) -> Non
         raise SynthesisError("TTS process group did not stop after SIGKILL") from error
 
 
+def _validate_pcm_signal(pcm: bytes) -> None:
+    """Reject empty, silent, and near-silent output before it reaches playback."""
+    if not pcm or len(pcm) % SAMPLE_WIDTH != 0:
+        raise SynthesisError("TTS WAV contains an incomplete PCM payload")
+    samples = array.array("h")
+    samples.frombytes(pcm)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    peak = max(abs(sample) for sample in samples)
+    rms = math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+    if peak < MIN_PCM_PEAK or rms < MIN_PCM_RMS:
+        raise SynthesisError("TTS output is below the minimum speech signal floor")
+
+
 def _read_wav(path: Path, *, uid: int) -> tuple[bytes, int]:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -218,6 +236,10 @@ def _read_wav(path: Path, *, uid: int) -> tuple[bytes, int]:
                     frames = audio.getnframes()
                     if frames <= 0 or frames / SAMPLE_RATE > MAX_AUDIO_SECONDS:
                         raise SynthesisError("TTS output duration is outside the limit")
+                    pcm = audio.readframes(frames + 1)
+                    if len(pcm) != frames * CHANNELS * SAMPLE_WIDTH:
+                        raise SynthesisError("TTS WAV contains an incomplete PCM payload")
+                    _validate_pcm_signal(pcm)
             except (EOFError, wave.Error) as error:
                 raise SynthesisError(f"TTS output is not a valid WAV: {error}") from error
             stream.seek(0)
@@ -245,8 +267,10 @@ def _validate_wav_payload(payload: bytes) -> int:
             if frames <= 0 or frames / SAMPLE_RATE > MAX_AUDIO_SECONDS:
                 raise SynthesisError("TTS output duration is outside the limit")
             expected_pcm_bytes = frames * CHANNELS * SAMPLE_WIDTH
-            if len(audio.readframes(frames + 1)) != expected_pcm_bytes:
+            pcm = audio.readframes(frames + 1)
+            if len(pcm) != expected_pcm_bytes:
                 raise SynthesisError("TTS WAV contains an incomplete PCM payload")
+            _validate_pcm_signal(pcm)
     except (EOFError, wave.Error) as error:
         raise SynthesisError(f"TTS output is not a valid WAV: {error}") from error
     return frames
@@ -503,6 +527,11 @@ def _read_worker_bytes(
             ) from error
         if not chunk:
             status = process.poll()
+            if status is None:
+                try:
+                    status = process.wait(timeout=_POLL_SECONDS)
+                except subprocess.TimeoutExpired:
+                    pass
             detail = "" if status is None else f" with status {status}"
             raise SynthesisError(
                 f"persistent TTS worker ended during {phase}{detail}"
@@ -877,6 +906,8 @@ __all__ = [
     "DEFAULT_RUN_TIMEOUT",
     "DEFAULT_TTS_LAUNCHER",
     "MAX_AUDIO_SECONDS",
+    "MIN_PCM_PEAK",
+    "MIN_PCM_RMS",
     "MAX_TEXT_BYTES",
     "MAX_WAV_BYTES",
     "PERSISTENT_TTS_RUNTIME_CLOSURE",

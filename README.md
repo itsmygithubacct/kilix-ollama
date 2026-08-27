@@ -173,7 +173,11 @@ but creates fresh inference context, sampler, and generator state for each
 utterance. Text uses a private binary pipe protocol and is never placed in
 argv, prompt files, or logs. On the local TU106/NVK development machine, twelve
 fixed-seed requests were byte-identical and warm synthesis ran faster than real
-time. A real co-residency probe confirmed that Qwen and Pocket do not execute on
+time, but conversational prompts later exposed malformed near-silent output.
+Container validity and repeatability were therefore insufficient qualification.
+Both Pocket runners now reject silent or near-silent PCM before an application
+can play it, and this native candidate is not admitted for application speech.
+A real co-residency probe confirmed only that Qwen and Pocket do not execute on
 the accelerator concurrently. These are local development results, not an
 accepted schema, broad hardware qualification, or CUDA-parity evidence.
 
@@ -183,12 +187,13 @@ There is no accepted conversation schema, public daemon entry point, avatar
 UI, emotional-state or lip-motion integration, or release-admitted product
 voice. The supervisor, live mediation server, shared arbiter, and synthesis
 runners are implemented as unfrozen library candidates with deterministic and
-local integration coverage. Model and weight artifacts remain deliberately
-absent from the repository. The optional TTS catalog and installer are a local
-conversion contract, not model or runtime admission. Python and the standard
-library remain a provisional control-plane choice; downloads reuse Kilix
-Content, and conversion plus native inference require separately packaged,
-pinned closures.
+local integration coverage. Native Pocket output currently fails the local
+application-quality gate and remains research-only. Model and weight artifacts
+remain deliberately absent from the repository. The optional TTS catalog and
+installer are a local conversion contract, not model or runtime admission.
+Python and the standard library remain a provisional control-plane choice;
+downloads reuse Kilix Content, and conversion plus native inference require
+separately packaged, pinned closures.
 
 ## License
 

@@ -62,7 +62,13 @@ class VulkanTtsRunnerTests(unittest.TestCase):
             "        audio.setnchannels(1)\n"
             "        audio.setsampwidth(2)\n"
             "        audio.setframerate(24000)\n"
-            "        audio.writeframes(b'\\x00\\x00' * 2400)\n",
+            "        if prompt == 'SILENT':\n"
+            "            pcm = b'\\x00\\x00' * 2400\n"
+            "        elif prompt == 'QUIET':\n"
+            "            pcm = (b'\\x40\\x00\\xc0\\xff') * 1200\n"
+            "        else:\n"
+            "            pcm = (b'\\x00\\x08\\x00\\xf8') * 1200\n"
+            "        audio.writeframes(pcm)\n",
             encoding="utf-8",
         )
         self.launcher.chmod(0o700)
@@ -163,6 +169,14 @@ class VulkanTtsRunnerTests(unittest.TestCase):
     def test_invalid_wav_is_rejected(self) -> None:
         with self.assertRaises(SynthesisError):
             self.runner.synthesize("BAD")
+        self.assertEqual(list(self.paths.temp_dir.glob(".tts-request-*")), [])
+
+    def test_silent_and_low_energy_wav_are_rejected(self) -> None:
+        for prompt in ("SILENT", "QUIET"):
+            with self.subTest(prompt=prompt), self.assertRaisesRegex(
+                SynthesisError, "minimum speech signal floor"
+            ):
+                self.runner.synthesize(prompt)
         self.assertEqual(list(self.paths.temp_dir.glob(".tts-request-*")), [])
 
     def test_admission_fails_before_model_resolution(self) -> None:
@@ -267,7 +281,13 @@ class PersistentVulkanTtsWorkerTests(unittest.TestCase):
             "        audio.setnchannels(1)\n"
             "        audio.setsampwidth(2)\n"
             "        audio.setframerate(24000)\n"
-            "        audio.writeframes(b'\\x00\\x00' * 2400)\n"
+            "        if text == 'SILENT':\n"
+            "            pcm = b'\\x00\\x00' * 2400\n"
+            "        elif text == 'QUIET':\n"
+            "            pcm = (b'\\x40\\x00\\xc0\\xff') * 1200\n"
+            "        else:\n"
+            "            pcm = (b'\\x00\\x08\\x00\\xf8') * 1200\n"
+            "        audio.writeframes(pcm)\n"
             "    reply(0, target.getvalue())\n",
             encoding="utf-8",
         )
@@ -393,6 +413,14 @@ class PersistentVulkanTtsWorkerTests(unittest.TestCase):
         self.assertFalse(self.worker.record()["worker_running"])
         result = self.worker.synthesize("back again")
         self.assertEqual(result.frames, 2400)
+
+    def test_silent_and_low_energy_output_drop_worker(self) -> None:
+        for prompt in ("SILENT", "QUIET"):
+            with self.subTest(prompt=prompt), self.assertRaisesRegex(
+                SynthesisError, "minimum speech signal floor"
+            ):
+                self.worker.synthesize(prompt)
+            self.assertFalse(self.worker.record()["worker_running"])
 
     def test_invalid_input_and_admission_fail_before_model_access(self) -> None:
         for text in ("", "\x00", "x" * (MAX_TEXT_BYTES + 1)):
