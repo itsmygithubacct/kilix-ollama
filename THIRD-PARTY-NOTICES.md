@@ -32,7 +32,16 @@ The separately installed Plebian OS converter obtains llama.cpp source at
 commit `7e4c0a96880dae4fc4268ad441f8a6446bd5460a`, retains its MIT license and a
 modification notice, and does not obtain model bytes.
 
-The exact Ollama, llama.cpp, Go-module, native-library, converter, and other
-model notice sets belong to their future digest-bound release closures. This
-file must be updated before any of those bytes are added to this repository or
-a distribution.
+The repository's native persistent-worker source is original Kilix code that
+uses llama.cpp's public llama, ggml-backend, and mtmd interfaces. Plebian OS
+builds the external llama.cpp source independently from the same immutable
+commit, verifies the complete native output closure, and retains the upstream
+MIT license. Neither that source archive nor its compiled libraries, generated
+Vulkan shaders, or worker executable is carried in this repository.
+
+The development Ollama runtime remains outside this repository. Its Plebian OS
+installer accepts only a local exact closure and verifies the candidate's
+Ollama, llama.cpp, Go, native-library, and module notice tree. That tree is
+provisional audit material, not a frozen release notice set; it must be
+regenerated from any eventual release artifact. No carrier URL or runtime byte
+is represented here while carrier approval remains open.

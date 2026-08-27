@@ -106,10 +106,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertEqual(json.loads(stdout)["unknown_routes"], "deny")
 
-    def test_service_contract_reports_no_launcher(self) -> None:
+    def test_service_contract_reports_gated_supervisor(self) -> None:
         status, stdout, _ = self.invoke("service-contract", "--json")
         self.assertEqual(status, 0)
-        self.assertFalse(json.loads(stdout)["process_launch_implemented"])
+        record = json.loads(stdout)
+        self.assertTrue(record["process_launch_implemented"])
+        self.assertFalse(record["automatic_launch_enabled"])
 
     def test_runtime_profiles_are_machine_readable_and_model_free(self) -> None:
         status, stdout, stderr = self.invoke("runtime-profiles", "--json")

@@ -5,11 +5,26 @@
 - Add a qualification-gated NVK/TU106 Qwen 3.5 runtime tuning profile.
 - Fix service candidates at one 4096-token model and explicitly enable Vulkan
   only for a qualified Vulkan backend.
+- Add a hash-admitted process-group supervisor for the verified private
+  Unix-listener candidate, including readiness and inode-safe cleanup.
+- Add bounded same-UID Unix HTTP mediation with strict request/response policy,
+  local-only forwarding, cancellation, and no cloud fallback.
+- Add a bounded shared accelerator arbiter that serializes Qwen turns and
+  prioritizes queued TTS at utterance boundaries.
+- Add exact-artifact one-shot and persistent Pocket Vulkan speech runners,
+  private binary framing, per-request state isolation, deterministic reset,
+  timeout/cancellation cleanup, and prompt-free status records.
+- Add the native persistent TTS worker source without model, weight, generated
+  shader, or binary payloads.
+- Add the verified Ollama private-Unix listener delta and integrate against the
+  external fail-closed Plebian OS runtime installer; no runtime binary or
+  carrier location is added here.
 
 ## 0.2.1 — development
 
 - Add the unpublished, model-free application spine.
-- Add fixed runtime layout and launch specifications without starting a daemon.
+- Add fixed runtime layout and launch specifications without exposing a public
+  daemon command.
 - Add internal Vulkan/Nouveau discovery with qualification-gated selection.
 - Add a deny-by-default Ollama API mediation policy and bounded health parsers.
 - Add deterministic human and JSON diagnostics.

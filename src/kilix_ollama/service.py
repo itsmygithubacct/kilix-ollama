@@ -76,12 +76,16 @@ def _fixed_environment(
     endpoint: str,
     runtime_profile: RuntimeProfile | None,
 ) -> Mapping[str, str]:
+    unix_listener = endpoint.startswith("unix://")
     environment = {
         "HOME": str(paths.upstream_home),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "OLLAMA_CONTEXT_LENGTH": "4096",
-        "OLLAMA_HOST": endpoint,
+        # A candidate without the independently verified listener delta binds
+        # only an ephemeral loopback port, then fails readiness and is killed;
+        # it never falls back to the public/default Ollama port.
+        "OLLAMA_HOST": "127.0.0.1:0" if unix_listener else endpoint,
         "OLLAMA_KEEP_ALIVE": "5m",
         "OLLAMA_LLM_LIBRARY": BACKEND_LIBRARY[selection.selected],
         "OLLAMA_MAX_LOADED_MODELS": "1",
@@ -95,6 +99,8 @@ def _fixed_environment(
         "XDG_DATA_HOME": str(paths.data_dir),
         "XDG_STATE_HOME": str(paths.state_dir),
     }
+    if unix_listener:
+        environment["OLLAMA_KILIX_SOCKET"] = str(paths.upstream_socket)
     if selection.selected in ("vulkan", "vulkan-nouveau"):
         environment["OLLAMA_VULKAN"] = "1"
     if runtime_profile is not None:
@@ -161,7 +167,10 @@ def service_contract_record() -> dict[str, object]:
         "environment_source": "cleared-fixed-allowlist",
         "runtime_launcher": str(DEFAULT_RUNTIME_LAUNCHER),
         "runtime_profiles": "external-qualification-required",
-        "process_launch_implemented": False,
+        "process_launch_implemented": True,
+        "automatic_launch_enabled": False,
+        "launch_admission": "exact-external-transport-and-runtime-evidence-required",
+        "shared_accelerator_arbiter": "implemented-unfrozen",
         "weight_access": False,
     }
 

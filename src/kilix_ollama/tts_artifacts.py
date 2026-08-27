@@ -394,6 +394,34 @@ def inspect_install(
     return _inspect_model_directory(target, model, verify_hashes=verify_hashes)
 
 
+def verified_runtime_artifacts(
+    catalog_id: str = MODEL_ID,
+    *,
+    paths: RuntimePaths | None = None,
+) -> tuple[Path, Path]:
+    """Return the exact local model/projector pair after full hash verification."""
+    model = get_model(catalog_id)
+    runtime_paths = RuntimePaths.from_environment() if paths is None else paths
+    installed, detail = inspect_install(
+        model.catalog_id,
+        paths=runtime_paths,
+        verify_hashes=True,
+    )
+    if not installed:
+        raise InstallError(f"optional TTS runtime is not verified: {detail}")
+    by_role = {
+        artifact.role: artifact
+        for artifact in model.derived_artifacts
+    }
+    try:
+        model_artifact = by_role["runtime-model-q8_0"]
+        projector_artifact = by_role["runtime-projector-q8_0"]
+    except KeyError as error:
+        raise InstallError("optional TTS catalog has no exact runtime pair") from error
+    root = _model_dir(runtime_paths, model) / "runtime"
+    return root / model_artifact.filename, root / projector_artifact.filename
+
+
 def _inspect_model_directory(
     target: Path,
     model: TtsModelSpec,
@@ -1044,4 +1072,5 @@ __all__ = [
     "inspect_install",
     "install_model",
     "remove_model",
+    "verified_runtime_artifacts",
 ]

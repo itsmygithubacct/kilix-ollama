@@ -2,26 +2,36 @@
 
 Kilix Ollama is a local lifecycle, compatibility, and mediation layer for an
 Ollama runtime managed by Plebian OS. This tree is an unpublished development
-spine for the 0.2.1 line. Its diagnostics perform read-only discovery and emit
-provisional contracts. A separate, explicit optional-TTS command can download
-hash-pinned inputs directly from their immutable upstream revision and convert
-them locally; no command starts Ollama or performs inference.
+spine for the 0.2.1 line. Its CLI diagnostics perform read-only discovery and
+emit provisional contracts. Its library now includes the candidate runtime
+supervisor, live private mediation proxy, shared accelerator arbiter, and
+one-shot and persistent Vulkan TTS runners. The public CLI still does not start
+the daemon or expose inference; application orchestration remains a later
+integration boundary. A separate explicit optional-TTS command can download
+hash-pinned inputs from their immutable upstream revision and convert them
+locally.
 
-The initial implementation establishes five boundaries:
+The implementation establishes these boundaries:
 
 - a deny-by-default API route and header policy;
 - a private per-user XDG layout and same-UID peer requirement;
-- CPU/Vulkan discovery with qualification-gated, fail-closed selection; and
-- immutable candidate service descriptions for either a private Unix listener
-  or a loopback listener isolated inside an owner-specific network namespace;
-  and
+- CPU/Vulkan discovery with qualification-gated, fail-closed selection;
+- immutable service descriptions and a hash-admitted process-group supervisor
+  for the private Unix-listener candidate;
+- a bounded live Unix-socket proxy that applies policy before forwarding and
+  never falls back to a cloud endpoint;
+- one shared, bounded accelerator arbiter that finishes an admitted LLM turn
+  before prioritizing queued speech at utterance boundaries;
+- exact-artifact one-shot and persistent Vulkan speech runners with bounded
+  framing, cancellation, timeout, and process-group cleanup; and
 - an opt-in, upstream-only Pocket TTS source catalog and atomic local
   conversion boundary with no bundled model or voice artifacts.
 
 Ordinary host loopback is not an isolation boundary on a multi-user machine.
-Neither transport has been selected for the release, and no command in this
-revision launches either one. The service description also starts
-from a cleared, fixed environment and never inherits caller-supplied
+The Unix-listener delta has been locally verified, but neither transport has an
+accepted release admission. Owner-isolated TCP supervision remains
+unimplemented. The supervisor starts from a cleared, fixed environment and
+never inherits caller-supplied
 `OLLAMA_*`, proxy, preload, registry, origin, model-root, or library-path
 values.
 
@@ -58,6 +68,21 @@ Service descriptions use only the fixed root-owned launcher
 unexpected owner, group/world-writable component, or substituted ancestor in
 that trusted path.
 
+Plebian OS carries the audited private-listener patch and a small fail-closed
+runtime installer. The verified native closure is not shipped, and no public
+carrier has been accepted. Development installation therefore requires the
+exact local closure explicitly:
+
+```sh
+sudo plebian-os-install-deps --vulkan-nouveau
+sudo plebian-os-install-kilix-ollama-runtime --closure /path/to/exact/closure
+```
+
+The installer verifies the complete 119,645,888-byte executable/library set,
+relative library links, notices, runtime package tuple, and downstream patch
+identity before publishing the fixed launcher atomically. It downloads
+nothing and contains no model or weight artifact.
+
 ## Optional local TTS conversion
 
 `tts-models` is metadata-only and never accesses the network or model bytes.
@@ -90,19 +115,25 @@ with:
 ```sh
 sudo plebian-os-install-deps --vulkan-tts
 sudo plebian-os-install-ollama-converter
+sudo plebian-os-install-kilix-vulkan-tts
 ```
 
-The first command installs the common Vulkan runtime and six exact direct
-Debian converter pins. The second verifies an immutable llama.cpp source
-archive and installs a 1.6 MiB Pocket-only offline wrapper; it does not download
-model weights. Its measured package closure is roughly 150 MiB to download and
-0.8 GiB installed, so neither command runs automatically. The closure is still
-not release-admitted and an actual install fails closed until it is present. A
-successful conversion retains the pinned model card and records source,
-converter, and output identities locally. `--discard-verified-source` removes
-the verified source inputs and cache only after the 123,629,056-byte GGUF pair
-verifies; the default retains them. Peak model conversion requires at least
-512 MiB free in addition to the independently installed converter closure.
+The dependency command installs the common Vulkan runtime, six exact direct
+Debian converter pins, and two native-build pins. The converter installer
+verifies an immutable llama.cpp source archive and installs a 1.6 MiB
+Pocket-only offline wrapper. The native installer builds the persistent worker
+from that same 36,889,653-byte archive and admits only its independently
+reproduced 66,532,472-byte runtime closure. It needs 1 GiB of temporary free
+space, then discards the archive and build tree. Neither installer downloads
+model weights, and none of these commands runs automatically. The measured
+converter package closure is roughly 150 MiB to download and 0.8 GiB installed.
+The closure is not release-admitted and an actual install fails closed until it
+is present. A successful conversion retains the pinned model card and records
+source, converter, and output identities locally.
+`--discard-verified-source` removes the verified source inputs and cache only
+after the 123,629,056-byte GGUF pair verifies; the default retains them. Peak
+model conversion requires at least 512 MiB free in addition to the separately
+installed converter closure.
 
 Removal requires confirmation and refuses a directory with any unexpected,
 unverified, or substituted content. None of these operations authorizes Kilix
@@ -137,15 +168,27 @@ finishes an LLM turn before prioritizing speech. Active overlap is recorded as
 a degraded fallback. This is scheduling metadata only: it neither installs nor
 identifies a speech model, and it cannot admit itself.
 
+The persistent Pocket worker retains its verified model pair between requests
+but creates fresh inference context, sampler, and generator state for each
+utterance. Text uses a private binary pipe protocol and is never placed in
+argv, prompt files, or logs. On the local TU106/NVK development machine, twelve
+fixed-seed requests were byte-identical and warm synthesis ran faster than real
+time. A real co-residency probe confirmed that Qwen and Pocket do not execute on
+the accelerator concurrently. These are local development results, not an
+accepted schema, broad hardware qualification, or CUDA-parity evidence.
+
 ## Current limits
 
-There is no conversation schema, supervisor, live mediation server, UI,
-product voice, or synthesis service in this revision. Model and weight
-artifacts remain deliberately absent from the repository. The optional TTS
-catalog and installer are an unfrozen local-conversion contract, not model or
-runtime admission. Python and the standard library are a provisional
-implementation choice for this local spike; downloads reuse Kilix Content,
-and conversion requires a separately packaged, pinned converter closure.
+There is no accepted conversation schema, public daemon entry point, avatar
+UI, emotional-state or lip-motion integration, or release-admitted product
+voice. The supervisor, live mediation server, shared arbiter, and synthesis
+runners are implemented as unfrozen library candidates with deterministic and
+local integration coverage. Model and weight artifacts remain deliberately
+absent from the repository. The optional TTS catalog and installer are a local
+conversion contract, not model or runtime admission. Python and the standard
+library remain a provisional control-plane choice; downloads reuse Kilix
+Content, and conversion plus native inference require separately packaged,
+pinned closures.
 
 ## License
 

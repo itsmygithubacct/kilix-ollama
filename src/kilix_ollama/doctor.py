@@ -18,6 +18,7 @@ from .backend import (
 from .errors import BackendUnavailable, RuntimeContractError
 from .paths import RuntimePaths, private_directory_status
 from .service import DEFAULT_RUNTIME_LAUNCHER, service_contract_record
+from .trust import validate_trusted_executable
 
 
 @dataclass(frozen=True)
@@ -66,46 +67,14 @@ def _launcher_check(
     expected_uid: int,
     trusted_root: Path,
 ) -> Check:
-    """Validate a fixed launcher and each retained ancestor without following links."""
-    if not executable.is_absolute() or not trusted_root.is_absolute():
-        return Check("runtime-launcher", "error", "launcher validation paths are not absolute")
     try:
-        relative = executable.relative_to(trusted_root)
-    except ValueError:
-        return Check("runtime-launcher", "error", "launcher is outside its trusted root")
-    candidates = [trusted_root]
-    cursor = trusted_root
-    for part in relative.parts:
-        cursor = cursor / part
-        candidates.append(cursor)
-    for index, candidate in enumerate(candidates):
-        final = index == len(candidates) - 1
-        try:
-            metadata = candidate.lstat()
-        except FileNotFoundError:
-            return Check("runtime-launcher", "error", f"missing: {candidate}")
-        except OSError as error:
-            return Check("runtime-launcher", "error", f"unreadable: {candidate}: {error}")
-        if stat.S_ISLNK(metadata.st_mode):
-            return Check("runtime-launcher", "error", f"symlink in trusted path: {candidate}")
-        if final and not stat.S_ISREG(metadata.st_mode):
-            return Check("runtime-launcher", "error", "runtime launcher is not a regular file")
-        if not final and not stat.S_ISDIR(metadata.st_mode):
-            return Check("runtime-launcher", "error", f"ancestor is not a directory: {candidate}")
-        if metadata.st_uid != expected_uid:
-            return Check(
-                "runtime-launcher",
-                "error",
-                f"{candidate} is owned by uid {metadata.st_uid}, expected {expected_uid}",
-            )
-        if metadata.st_mode & 0o022:
-            return Check(
-                "runtime-launcher",
-                "error",
-                f"group/world writable trusted path: {candidate}",
-            )
-    if not os.access(executable, os.X_OK):
-        return Check("runtime-launcher", "error", "runtime launcher is not executable")
+        validate_trusted_executable(
+            executable,
+            expected_uid=expected_uid,
+            trusted_root=trusted_root,
+        )
+    except RuntimeContractError as error:
+        return Check("runtime-launcher", "error", str(error))
     return Check("runtime-launcher", "ok", str(executable))
 
 

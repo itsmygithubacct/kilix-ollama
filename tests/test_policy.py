@@ -7,10 +7,12 @@ from kilix_ollama.policy import (
     MAX_HEADER_VALUE_BYTES,
     MAX_REQUEST_BODY,
     ROUTE_METHODS,
+    authorize_request_body,
     authorize_route,
     bounded_body,
     forward_request_headers,
     forward_response_headers,
+    has_explicit_cloud_source,
     policy_record,
     verify_peer,
 )
@@ -131,6 +133,63 @@ class MessagePolicyTests(unittest.TestCase):
         for peer in (1001, "1000", True):
             with self.subTest(peer=peer), self.assertRaises(PolicyDenied):
                 verify_peer(peer, owner_uid=1000)  # type: ignore[arg-type]
+
+    def test_local_model_bodies_are_admitted_but_cloud_suffixes_are_denied(self) -> None:
+        admitted = (
+            ("POST", "/api/chat", b'{"model":"qwen3.5:4b","messages":[]}'),
+            ("POST", "/api/generate", b'{"model":"qwen3.5:4b:local","prompt":"hi"}'),
+            ("POST", "/api/embed", b'{"model":"nomic-embed","input":"hi"}'),
+            ("POST", "/api/show", b'{"name":"qwen3.5:4b"}'),
+            ("POST", "/api/pull", b'{"model":"qwen3.5:4b"}'),
+            ("DELETE", "/api/delete", b'{"model":"qwen3.5:4b"}'),
+            ("POST", "/api/copy", b'{"source":"qwen:a","destination":"qwen:b"}'),
+        )
+        for method, path, body in admitted:
+            with self.subTest(path=path):
+                self.assertIs(authorize_request_body(method, path, body), body)
+
+        cloud_names = (
+            "qwen3.5:cloud",
+            "qwen3.5:4b:cloud",
+            "qwen3.5:4b-cloud",
+            "qwen3.5:CLOUD",
+            "qwen3.5:cloud:local",
+        )
+        for model in cloud_names:
+            with self.subTest(model=model), self.assertRaises(PolicyDenied):
+                authorize_request_body(
+                    "POST",
+                    "/api/generate",
+                    (f'{{"model":"{model}"}}').encode("ascii"),
+                )
+            self.assertTrue(has_explicit_cloud_source(model))
+        self.assertFalse(has_explicit_cloud_source("my-cloud-model"))
+
+    def test_model_body_is_strict_unambiguous_json(self) -> None:
+        denied = (
+            b"{}",
+            b'{"model":"qwen","model":"cloud:cloud"}',
+            b'{"model":"qwen","temperature":NaN}',
+            b'{"model":"qwen","temperature":1e9999}',
+            b'{"model":"qwen","name":"other"}',
+            b'{"model":"contains space"}',
+        )
+        for body in denied:
+            with self.subTest(body=body), self.assertRaises(PolicyDenied):
+                authorize_request_body("POST", "/api/show", body)
+
+    def test_pull_refuses_credentials_and_insecure_transport(self) -> None:
+        for body in (
+            b'{"model":"qwen","insecure":true}',
+            b'{"model":"qwen","username":"secret"}',
+            b'{"model":"qwen","password":"secret"}',
+        ):
+            with self.subTest(body=body), self.assertRaises(PolicyDenied):
+                authorize_request_body("POST", "/api/pull", body)
+
+    def test_body_is_denied_on_bodyless_route(self) -> None:
+        with self.assertRaises(PolicyDenied):
+            authorize_request_body("GET", "/api/version", b"{}")
 
 
 if __name__ == "__main__":

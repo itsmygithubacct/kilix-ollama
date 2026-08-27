@@ -25,11 +25,46 @@ class UpstreamProtocolError(KilixOllamaError):
     """The upstream service returned malformed or incompatible data."""
 
 
+class AcceleratorQueueFull(KilixOllamaError):
+    """The bounded shared-accelerator queue has no admission slot."""
+
+
+class AcceleratorRequestCancelled(KilixOllamaError):
+    """A queued accelerator request was cancelled before it ran."""
+
+
+class AcceleratorRequestTimeout(KilixOllamaError):
+    """A queued accelerator request exceeded its wait deadline."""
+
+
+class AcceleratorUnavailable(KilixOllamaError):
+    """The shared accelerator arbiter is no longer accepting work."""
+
+
+class SupervisorError(KilixOllamaError):
+    """The fixed local runtime could not be supervised safely."""
+
+
+class SynthesisError(KilixOllamaError):
+    """A local speech synthesis request failed safely."""
+
+
+class SynthesisCancelled(SynthesisError):
+    """A local speech synthesis request was cancelled."""
+
+
 __all__ = [
+    "AcceleratorQueueFull",
+    "AcceleratorRequestCancelled",
+    "AcceleratorRequestTimeout",
+    "AcceleratorUnavailable",
     "BackendUnavailable",
     "InstallError",
     "KilixOllamaError",
     "PolicyDenied",
     "RuntimeContractError",
+    "SupervisorError",
+    "SynthesisCancelled",
+    "SynthesisError",
     "UpstreamProtocolError",
 ]

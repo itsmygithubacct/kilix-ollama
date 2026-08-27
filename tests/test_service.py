@@ -54,6 +54,11 @@ class ServiceSpecTests(unittest.TestCase):
             self.assertFalse(spec.requires_isolation_proof)
             self.assertTrue(spec.requires_listener_delta)
             self.assertEqual(spec.environ["OLLAMA_NO_CLOUD"], "1")
+            self.assertEqual(spec.environ["OLLAMA_HOST"], "127.0.0.1:0")
+            self.assertEqual(
+                spec.environ["OLLAMA_KILIX_SOCKET"],
+                f"{root}/run/kilix-ollama/upstream.sock",
+            )
             self.assertEqual(spec.environ["OLLAMA_LLM_LIBRARY"], "cpu")
             self.assertEqual(spec.environ["OLLAMA_CONTEXT_LENGTH"], "4096")
             self.assertEqual(spec.environ["OLLAMA_MAX_LOADED_MODELS"], "1")
@@ -146,7 +151,8 @@ class ServiceSpecTests(unittest.TestCase):
             contract["runtime_launcher"],
             "/usr/lib/plebian-os/ollama/ollama-current",
         )
-        self.assertFalse(contract["process_launch_implemented"])
+        self.assertTrue(contract["process_launch_implemented"])
+        self.assertFalse(contract["automatic_launch_enabled"])
         self.assertFalse(contract["weight_access"])
 
     def test_overlong_unix_socket_path_fails(self) -> None:
