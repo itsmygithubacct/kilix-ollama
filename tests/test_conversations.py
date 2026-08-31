@@ -62,6 +62,14 @@ class ConversationStoreTests(unittest.TestCase):
         )
         self.assertEqual(len(updated.messages), 2)
         self.assertEqual(self.store.load(conversation.identifier), updated)
+        self.assertNotIn("thinking", updated.record()["messages"][1])
+        self.assertEqual(
+            updated.record(include_thinking=True)["messages"][1]["thinking"],
+            "private",
+        )
+        self.assertEqual(
+            updated.storage_record()["messages"][1]["thinking"], "private"
+        )
         listed = self.store.list()
         self.assertEqual(len(listed), 1)
         self.assertEqual(listed[0]["id"], conversation.identifier)

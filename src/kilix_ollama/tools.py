@@ -21,6 +21,8 @@ MAX_TOOL_OUTPUT_BYTES = 64 * 1024
 MAX_TOOL_FILE_BYTES = 256 * 1024
 MAX_SEARCH_READ_BYTES = 4 * 1024 * 1024
 MAX_SEARCH_FILES = 4096
+MAX_SEARCH_ENTRIES = 8192
+MAX_SEARCH_DEPTH = 64
 MAX_SEARCH_RESULTS = 20
 MAX_EXPRESSION_BYTES = 256
 MAX_EXPRESSION_NODES = 64
@@ -35,6 +37,7 @@ class ToolPreview:
     normalized_arguments: dict[str, object]
     affected_resources: tuple[str, ...]
     data_returned_to_model: str
+    _resource_identity: tuple[int, int] | None = None
 
     def record(self) -> dict[str, object]:
         return {
@@ -194,7 +197,11 @@ def _text(value: object, label: str, *, maximum: int, empty: bool = False) -> st
         raise ToolError(f"tool argument {label} contains invalid Unicode") from error
     if size > maximum or (not empty and not value):
         raise ToolError(f"tool argument {label} is outside its bounds")
-    if "\x00" in value or any(ord(character) < 0x20 for character in value):
+    if (
+        "\x00" in value
+        or any(ord(character) < 0x20 for character in value)
+        or sanitize_text(value) != value
+    ):
         raise ToolError(f"tool argument {label} contains a control character")
     return value
 
@@ -271,18 +278,31 @@ class ToolRegistry:
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         roots: list[Path] = []
+        identities: list[tuple[int, int]] = []
         for index, raw in enumerate(selected_roots):
             try:
                 root = Path(raw).resolve(strict=True)
-                metadata = root.lstat()
+                descriptor = os.open(
+                    root,
+                    os.O_RDONLY
+                    | os.O_DIRECTORY
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                )
             except OSError as error:
                 raise ToolError(f"selected tool root {index} is unavailable") from error
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-                raise ToolError(f"selected tool root {index} is not a real directory")
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise ToolError(f"selected tool root {index} is not a real directory")
+                identities.append((metadata.st_dev, metadata.st_ino))
+            finally:
+                os.close(descriptor)
             roots.append(root)
         if len(roots) > 16:
             raise ToolError("selected tool-root count exceeds its limit")
         self.roots = tuple(roots)
+        self._root_identities = tuple(identities)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def declarations(self) -> list[dict[str, object]]:
@@ -294,38 +314,71 @@ class ToolRegistry:
             raise ToolError("no local directory was selected for tools")
         return index, self.roots[index]
 
-    def _resolve(self, root: Path, value: object, *, directory: bool | None) -> tuple[str, Path]:
+    def _relative(self, value: object) -> tuple[str, tuple[str, ...]]:
         relative_text = _text(value, "path", maximum=4096)
         relative = Path(relative_text)
         if relative.is_absolute() or ".." in relative.parts:
             raise ToolError("tool path must stay beneath the selected directory")
-        cursor = root
-        for component in relative.parts:
-            if component in ("", "."):
-                continue
-            cursor = cursor / component
-            try:
-                metadata = cursor.lstat()
-            except OSError as error:
-                raise ToolError("selected tool path is unavailable") from error
-            if stat.S_ISLNK(metadata.st_mode):
-                raise ToolError("symbolic links are not accepted in selected tool paths")
+        components = tuple(
+            component for component in relative.parts if component not in ("", ".")
+        )
+        normalized = "." if not components else Path(*components).as_posix()
+        return normalized, components
+
+    def _open_root(self, index: int) -> int:
+        flags = (
+            os.O_RDONLY
+            | os.O_DIRECTORY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
         try:
-            resolved = (root / relative).resolve(strict=True)
+            descriptor = os.open(self.roots[index], flags)
         except OSError as error:
-            raise ToolError("selected tool path is unavailable") from error
-        if not resolved.is_relative_to(root):
-            raise ToolError("selected tool path escaped its selected directory")
+            raise ToolError("selected tool root cannot be reopened safely") from error
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or (metadata.st_dev, metadata.st_ino) != self._root_identities[index]
+        ):
+            os.close(descriptor)
+            raise ToolError("selected tool root identity changed")
+        return descriptor
+
+    def _open_beneath(
+        self,
+        index: int,
+        value: object,
+        *,
+        directory: bool,
+    ) -> tuple[str, int, tuple[int, int]]:
+        normalized, components = self._relative(value)
+        descriptor = self._open_root(index)
         try:
-            metadata = resolved.lstat()
-        except OSError as error:
-            raise ToolError("selected tool path cannot be inspected") from error
-        if directory is True and not stat.S_ISDIR(metadata.st_mode):
-            raise ToolError("selected tool path is not a directory")
-        if directory is False and not stat.S_ISREG(metadata.st_mode):
-            raise ToolError("selected tool path is not a regular file")
-        normalized = "." if resolved == root else resolved.relative_to(root).as_posix()
-        return normalized, resolved
+            if not components and not directory:
+                raise ToolError("selected tool path is not a regular file")
+            for offset, component in enumerate(components):
+                final = offset == len(components) - 1
+                flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+                if not final or directory:
+                    flags |= os.O_DIRECTORY
+                else:
+                    flags |= getattr(os, "O_NONBLOCK", 0)
+                try:
+                    child = os.open(component, flags, dir_fd=descriptor)
+                except OSError as error:
+                    raise ToolError("selected tool path cannot be opened safely") from error
+                os.close(descriptor)
+                descriptor = child
+            metadata = os.fstat(descriptor)
+            expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+            if not expected_type(metadata.st_mode):
+                label = "directory" if directory else "regular file"
+                raise ToolError(f"selected tool path is not a {label}")
+            return normalized, descriptor, (metadata.st_dev, metadata.st_ino)
+        except BaseException:
+            os.close(descriptor)
+            raise
 
     def _normalize(self, name: str, arguments: dict[str, object]) -> ToolPreview:
         if name == "kilix.current_time":
@@ -340,14 +393,18 @@ class ToolRegistry:
             return ToolPreview(name, "low", {"expression": expression}, (), "one arithmetic result")
         if name == "kilix.read_selected_file":
             _exact_keys(arguments, required={"selection", "path"})
-            index, root = self._selection(arguments["selection"])
-            relative, _path = self._resolve(root, arguments["path"], directory=False)
+            index, _root = self._selection(arguments["selection"])
+            relative, descriptor, identity = self._open_beneath(
+                index, arguments["path"], directory=False
+            )
+            os.close(descriptor)
             return ToolPreview(
                 name,
                 "local-data",
                 {"selection": index, "path": relative},
                 (f"selection[{index}]/{relative}",),
                 f"at most {MAX_TOOL_FILE_BYTES} UTF-8 bytes from the selected file",
+                identity,
             )
         if name == "kilix.search_selected_text":
             _exact_keys(
@@ -355,8 +412,11 @@ class ToolRegistry:
                 required={"selection", "path", "query"},
                 optional={"max_results"},
             )
-            index, root = self._selection(arguments["selection"])
-            relative, _path = self._resolve(root, arguments["path"], directory=True)
+            index, _root = self._selection(arguments["selection"])
+            relative, descriptor, identity = self._open_beneath(
+                index, arguments["path"], directory=True
+            )
+            os.close(descriptor)
             query = _text(arguments["query"], "query", maximum=128)
             maximum = _integer(
                 arguments.get("max_results", MAX_SEARCH_RESULTS),
@@ -375,6 +435,7 @@ class ToolRegistry:
                 },
                 (f"selection[{index}]/{relative}",),
                 f"at most {maximum} matching UTF-8 lines",
+                identity,
             )
         raise ToolError("unknown tool is refused")
 
@@ -384,14 +445,13 @@ class ToolRegistry:
 
     def _read_file(self, preview: ToolPreview) -> dict[str, object]:
         arguments = preview.normalized_arguments
-        root = self.roots[int(arguments["selection"])]
-        relative, path = self._resolve(root, arguments["path"], directory=False)
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        index = int(arguments["selection"])
+        relative, descriptor, identity = self._open_beneath(
+            index, arguments["path"], directory=False
+        )
         try:
-            descriptor = os.open(path, flags)
-        except OSError as error:
-            raise ToolError("selected file cannot be opened safely") from error
-        try:
+            if identity != preview._resource_identity:
+                raise ToolError("selected file identity changed after approval")
             metadata = os.fstat(descriptor)
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_TOOL_FILE_BYTES:
                 raise ToolError("selected file is not a bounded regular file")
@@ -415,54 +475,113 @@ class ToolRegistry:
 
     def _search(self, preview: ToolPreview) -> dict[str, object]:
         arguments = preview.normalized_arguments
-        root = self.roots[int(arguments["selection"])]
-        relative, start = self._resolve(root, arguments["path"], directory=True)
+        index = int(arguments["selection"])
+        relative, start_descriptor, identity = self._open_beneath(
+            index, arguments["path"], directory=True
+        )
+        if identity != preview._resource_identity:
+            os.close(start_descriptor)
+            raise ToolError("selected search root identity changed after approval")
         query = str(arguments["query"])
         folded_query = query.casefold()
         maximum = int(arguments["max_results"])
         results: list[dict[str, object]] = []
         files_scanned = 0
         bytes_read = 0
-        for directory, names, filenames in os.walk(start, followlinks=False):
-            directory_path = Path(directory)
-            safe_names: list[str] = []
-            for name in sorted(names):
-                candidate = directory_path / name
+        entries_seen = 0
+        start_parts = () if relative == "." else tuple(Path(relative).parts)
+
+        def visit(directory_descriptor: int, display_parts: tuple[str, ...], depth: int) -> bool:
+            nonlocal bytes_read, entries_seen, files_scanned
+            if depth > MAX_SEARCH_DEPTH:
+                raise ToolError("selected search exceeds its directory-depth limit")
+            try:
+                names = sorted(os.listdir(directory_descriptor))
+            except OSError as error:
+                raise ToolError("selected search directory cannot be listed safely") from error
+            for name in names:
+                entries_seen += 1
+                if entries_seen > MAX_SEARCH_ENTRIES:
+                    raise ToolError("selected search exceeds its entry-count limit")
+                if not isinstance(name, str) or sanitize_text(name) != name:
+                    continue
                 try:
-                    if not candidate.is_symlink():
-                        safe_names.append(name)
+                    metadata = os.stat(
+                        name,
+                        dir_fd=directory_descriptor,
+                        follow_symlinks=False,
+                    )
                 except OSError:
                     continue
-            names[:] = safe_names
-            for filename in sorted(filenames):
-                path = directory_path / filename
+                if stat.S_ISLNK(metadata.st_mode):
+                    continue
+                if stat.S_ISDIR(metadata.st_mode):
+                    flags = (
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0)
+                    )
+                    try:
+                        child = os.open(name, flags, dir_fd=directory_descriptor)
+                    except OSError:
+                        continue
+                    try:
+                        observed = os.fstat(child)
+                        if (
+                            not stat.S_ISDIR(observed.st_mode)
+                            or (observed.st_dev, observed.st_ino)
+                            != (metadata.st_dev, metadata.st_ino)
+                        ):
+                            continue
+                        if visit(child, display_parts + (name,), depth + 1):
+                            return True
+                    finally:
+                        os.close(child)
+                    continue
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_TOOL_FILE_BYTES:
+                    continue
+                flags = (
+                    os.O_RDONLY
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_NONBLOCK", 0)
+                )
                 try:
-                    metadata = path.lstat()
+                    descriptor = os.open(name, flags, dir_fd=directory_descriptor)
                 except OSError:
                     continue
-                if (
-                    stat.S_ISLNK(metadata.st_mode)
-                    or not stat.S_ISREG(metadata.st_mode)
-                    or metadata.st_size > MAX_TOOL_FILE_BYTES
-                ):
-                    continue
+                try:
+                    observed = os.fstat(descriptor)
+                    if (
+                        not stat.S_ISREG(observed.st_mode)
+                        or (observed.st_dev, observed.st_ino)
+                        != (metadata.st_dev, metadata.st_ino)
+                        or observed.st_size > MAX_TOOL_FILE_BYTES
+                    ):
+                        continue
+                    payload = bytearray()
+                    while len(payload) <= MAX_TOOL_FILE_BYTES:
+                        block = os.read(
+                            descriptor,
+                            min(64 * 1024, MAX_TOOL_FILE_BYTES + 1 - len(payload)),
+                        )
+                        if not block:
+                            break
+                        payload.extend(block)
+                finally:
+                    os.close(descriptor)
                 files_scanned += 1
                 if files_scanned > MAX_SEARCH_FILES:
                     raise ToolError("selected search exceeds its file-count limit")
-                bytes_read += metadata.st_size
+                bytes_read += len(payload)
                 if bytes_read > MAX_SEARCH_READ_BYTES:
                     raise ToolError("selected search exceeds its read-byte limit")
-                flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+                if len(payload) > MAX_TOOL_FILE_BYTES:
+                    continue
                 try:
-                    descriptor = os.open(path, flags)
-                    try:
-                        payload = os.read(descriptor, MAX_TOOL_FILE_BYTES + 1)
-                    finally:
-                        os.close(descriptor)
-                    if len(payload) > MAX_TOOL_FILE_BYTES:
-                        continue
-                    content = payload.decode("utf-8", errors="strict")
-                except (OSError, UnicodeDecodeError):
+                    content = bytes(payload).decode("utf-8", errors="strict")
+                except UnicodeDecodeError:
                     continue
                 if "\x00" in content:
                     continue
@@ -473,25 +592,25 @@ class ToolRegistry:
                             safe_line = safe_line[:512] + "…"
                         results.append(
                             {
-                                "path": path.relative_to(root).as_posix(),
+                                "path": "/".join(display_parts + (name,)),
                                 "line": line_number,
                                 "text": safe_line,
                             }
                         )
                         if len(results) >= maximum:
-                            return {
-                                "root_path": relative,
-                                "query": query,
-                                "matches": results,
-                                "files_scanned": files_scanned,
-                                "truncated": True,
-                            }
+                            return True
+            return False
+
+        try:
+            truncated = visit(start_descriptor, start_parts, 0)
+        finally:
+            os.close(start_descriptor)
         return {
             "root_path": relative,
             "query": query,
             "matches": results,
             "files_scanned": files_scanned,
-            "truncated": False,
+            "truncated": truncated,
         }
 
     def _run(self, preview: ToolPreview) -> object:

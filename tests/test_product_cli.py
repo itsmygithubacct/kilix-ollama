@@ -13,12 +13,12 @@ from kilix_ollama.cli import main
 from kilix_ollama.streaming import StreamDelta, StreamResult
 
 
-def result(content: str) -> StreamResult:
+def result(content: str, *, thinking: str = "") -> StreamResult:
     return StreamResult(
         request_model="local:latest",
         response_model="local:latest",
         content=content,
-        thinking="",
+        thinking=thinking,
         tool_calls=(),
         done_reason="stop",
         metrics={"eval_count": 2},
@@ -27,8 +27,9 @@ def result(content: str) -> StreamResult:
 
 
 class _FakeClient:
-    def __init__(self, content: str = "answer") -> None:
+    def __init__(self, content: str = "answer", *, thinking: str = "") -> None:
         self.content = content
+        self.thinking = thinking
         self.generate_calls = []
         self.chat_calls = []
 
@@ -50,14 +51,14 @@ class _FakeClient:
         if callback is not None:
             callback(StreamDelta(content=self.content[:3], done=False))
             callback(StreamDelta(content=self.content[3:], done=True))
-        return result(self.content)
+        return result(self.content, thinking=self.thinking)
 
     def chat(self, model: str, messages, **kwargs):
         self.chat_calls.append((model, [dict(message) for message in messages], kwargs))
         callback = kwargs.get("on_delta")
         if callback is not None:
             callback(StreamDelta(content=self.content, done=True))
-        return result(self.content)
+        return result(self.content, thinking=self.thinking)
 
 
 class ProductCliTests(unittest.TestCase):
@@ -96,7 +97,20 @@ class ProductCliTests(unittest.TestCase):
             self.assertEqual(json.loads(stdout)["family"], "fixture")
             status, stdout, _ = self.invoke("library", "--installed", "--json")
             self.assertEqual(status, 0)
-            self.assertEqual(json.loads(stdout)["installed_count"], 1)
+            library = json.loads(stdout)
+            self.assertEqual(library["installed_count"], 1)
+            self.assertTrue(library["runtime_contacted"])
+
+    def test_installed_library_records_a_successful_empty_runtime_contact(self) -> None:
+        client = _FakeClient()
+        client.installed_models = lambda: ()
+        with mock.patch("kilix_ollama.cli.OllamaClient", return_value=client):
+            status, stdout, stderr = self.invoke("library", "--installed", "--json")
+        self.assertEqual(status, 0)
+        self.assertEqual(stderr, "")
+        record = json.loads(stdout)
+        self.assertEqual(record["installed_count"], 0)
+        self.assertTrue(record["runtime_contacted"])
 
     def test_one_off_plain_output_is_streamed_and_terminal_sanitized(self) -> None:
         client = _FakeClient("ok\x1b[31mred\x1b[0m")
@@ -194,6 +208,50 @@ class ProductCliTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(stderr, "")
             self.assertEqual(json.loads(stdout)["count"], 1)
+
+    def test_thinking_is_private_in_json_until_explicitly_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            os.environ,
+            {
+                "HOME": str(Path(directory) / "home"),
+                "XDG_RUNTIME_DIR": str(Path(directory) / "run"),
+                "XDG_STATE_HOME": str(Path(directory) / "state"),
+                "XDG_DATA_HOME": str(Path(directory) / "data"),
+                "XDG_CACHE_HOME": str(Path(directory) / "cache"),
+            },
+        ):
+            client = _FakeClient("answer", thinking="PRIVATE_CHAIN")
+            with mock.patch("kilix_ollama.cli.OllamaClient", return_value=client):
+                status, stdout, _stderr = self.invoke(
+                    "chat",
+                    "local:latest",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--development-runtime",
+                )
+            self.assertEqual(status, 0)
+            turn = json.loads(stdout)
+            self.assertNotIn("thinking", turn["result"])
+            self.assertNotIn("PRIVATE_CHAIN", stdout)
+            identifier = turn["conversation_id"]
+
+            status, stdout, stderr = self.invoke(
+                "conversations", "show", identifier, "--json"
+            )
+            self.assertEqual(status, 0)
+            self.assertEqual(stderr, "")
+            self.assertNotIn("thinking", json.loads(stdout)["messages"][1])
+            self.assertNotIn("PRIVATE_CHAIN", stdout)
+
+            status, stdout, stderr = self.invoke(
+                "conversations", "show", identifier, "--json", "--thinking"
+            )
+            self.assertEqual(status, 0)
+            self.assertEqual(stderr, "")
+            self.assertEqual(
+                json.loads(stdout)["messages"][1]["thinking"], "PRIVATE_CHAIN"
+            )
 
     def test_pull_refuses_before_runtime_or_network_and_states_denominator(self) -> None:
         with mock.patch(

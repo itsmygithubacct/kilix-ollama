@@ -254,7 +254,11 @@ def _installed_digest(record: Mapping[str, object]) -> str | None:
 
 def project_library(
     installed: Iterable[Mapping[str, object]] = (),
+    *,
+    runtime_contacted: bool = False,
 ) -> dict[str, object]:
+    if not isinstance(runtime_contacted, bool):
+        raise RuntimeContractError("runtime-contacted provenance must be Boolean")
     installed_by_name: dict[str, Mapping[str, object]] = {}
     for index, record in enumerate(installed):
         if not isinstance(record, Mapping):
@@ -306,7 +310,7 @@ def project_library(
         "curated_count": len(curated),
         "installed_count": len(installed_by_name),
         "installed_exact_count": exact_count,
-        "runtime_contacted": bool(installed_by_name),
+        "runtime_contacted": runtime_contacted,
         "automatic_install": False,
         "release_admission": False,
     }

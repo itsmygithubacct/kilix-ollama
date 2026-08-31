@@ -237,9 +237,11 @@ def _print_model_list(records: Sequence[dict[str, object]]) -> None:
 
 def _library(args: argparse.Namespace) -> int:
     installed: Sequence[dict[str, object]] = ()
+    runtime_contacted = False
     if args.installed:
         installed = _client(args).installed_models()
-    record = project_library(installed)
+        runtime_contacted = True
+    record = project_library(installed, runtime_contacted=runtime_contacted)
     if args.json:
         print(_json(record))
         return 0
@@ -415,7 +417,7 @@ def _conversations(args: argparse.Namespace) -> int:
     if args.conversation_command == "show":
         conversation = store.load(args.identifier)
         if args.json:
-            print(_json(conversation.record()))
+            print(_json(conversation.record(include_thinking=args.thinking)))
         else:
             print(store.export_markdown(args.identifier, include_thinking=args.thinking), end="")
         return 0

@@ -21,9 +21,6 @@ ROUTE_METHODS: dict[str, frozenset[str]] = {
     "/api/chat": frozenset(("POST",)),
     "/api/generate": frozenset(("POST",)),
     "/api/embed": frozenset(("POST",)),
-    "/api/pull": frozenset(("POST",)),
-    "/api/delete": frozenset(("DELETE",)),
-    "/api/copy": frozenset(("POST",)),
     "/api/status": frozenset(("GET",)),
 }
 
@@ -37,9 +34,6 @@ MODEL_BODY_FIELDS: dict[str, tuple[str, ...]] = {
     "/api/generate": ("model",),
     "/api/embed": ("model",),
     "/api/show": ("model", "name"),
-    "/api/pull": ("model", "name"),
-    "/api/delete": ("model", "name"),
-    "/api/copy": ("source", "destination"),
 }
 MAX_MODEL_NAME_BYTES = 1024
 
@@ -182,24 +176,13 @@ def authorize_request_body(method: str, path: str, body: bytes) -> bytes:
     for field in fields:
         if field in value and value[field] not in (None, ""):
             supplied[field] = _model_name(value[field], field)
-    if path == "/api/copy":
-        if set(supplied) != {"source", "destination"}:
-            raise PolicyDenied("copy requires exact non-empty source and destination model names")
-    elif not supplied:
+    if not supplied:
         raise PolicyDenied(f"{path} requires a non-empty model name")
     elif "model" in supplied and "name" in supplied and supplied["model"] != supplied["name"]:
         raise PolicyDenied("model and deprecated name fields disagree")
     for field, model in supplied.items():
         if has_explicit_cloud_source(model):
             raise PolicyDenied(f"cloud-tagged model in field {field!r} is denied")
-    if path == "/api/pull":
-        if value.get("insecure") is True:
-            raise PolicyDenied("insecure model pulls are denied")
-        if value.get("username") not in (None, "") or value.get("password") not in (
-            None,
-            "",
-        ):
-            raise PolicyDenied("model pull credentials are not accepted")
     return bounded
 
 

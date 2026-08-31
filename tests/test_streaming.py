@@ -106,6 +106,8 @@ class StreamAccumulatorTests(unittest.TestCase):
         self.assertEqual(result.metrics, {"eval_count": 2, "eval_duration": 30})
         self.assertEqual(result.event_count, 2)
         self.assertEqual([delta.content for delta in deltas], ["hel", "lo"])
+        self.assertNotIn("thinking", result.record())
+        self.assertEqual(result.record(include_thinking=True)["thinking"], "plan")
 
     def test_chat_stream_validates_and_collects_structured_tool_calls(self) -> None:
         call = {
@@ -144,15 +146,35 @@ class StreamAccumulatorTests(unittest.TestCase):
         )
 
     def test_model_identity_change_and_post_terminal_data_are_refused(self) -> None:
-        accumulator = StreamAccumulator(route="/api/generate", request_model="requested")
+        accumulator = StreamAccumulator(route="/api/generate", request_model="one")
         accumulator.accept({"model": "one", "response": "", "done": False})
         with self.assertRaises(UpstreamProtocolError):
             accumulator.accept({"model": "two", "response": "", "done": True})
 
-        accumulator = StreamAccumulator(route="/api/generate", request_model="requested")
+        accumulator = StreamAccumulator(route="/api/generate", request_model="one")
         accumulator.accept({"model": "one", "response": "", "done": True})
         with self.assertRaises(UpstreamProtocolError):
             accumulator.accept({"model": "one", "response": "late", "done": True})
+
+    def test_first_response_model_must_exactly_match_printable_ascii_request(self) -> None:
+        for request_model, response_model in (
+            ("requested:exact", "different:model"),
+            ("requested:exact", "requested:exact\u202e"),
+            ("requested:exact", "requested exact"),
+        ):
+            with self.subTest(response_model=response_model), self.assertRaises(
+                UpstreamProtocolError
+            ):
+                StreamAccumulator(
+                    route="/api/generate", request_model=request_model
+                ).accept(
+                    {"model": response_model, "response": "", "done": True}
+                )
+        for request_model in ("bad model", "bad\u202e", ""):
+            with self.subTest(request_model=request_model), self.assertRaises(
+                UpstreamProtocolError
+            ):
+                StreamAccumulator(route="/api/generate", request_model=request_model)
 
     def test_missing_terminal_model_message_role_and_metrics_fail_closed(self) -> None:
         cases = (

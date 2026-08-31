@@ -32,6 +32,9 @@ class RoutePolicyTests(unittest.TestCase):
             "/api/experimental/web_search",
             "/api/experimental/web_fetch",
             "/api/experimental/model-recommendations",
+            "/api/pull",
+            "/api/delete",
+            "/api/copy",
             "/v1/messages",
             "/v1/chat/completions",
             "/",
@@ -140,9 +143,6 @@ class MessagePolicyTests(unittest.TestCase):
             ("POST", "/api/generate", b'{"model":"qwen3.5:4b:local","prompt":"hi"}'),
             ("POST", "/api/embed", b'{"model":"nomic-embed","input":"hi"}'),
             ("POST", "/api/show", b'{"name":"qwen3.5:4b"}'),
-            ("POST", "/api/pull", b'{"model":"qwen3.5:4b"}'),
-            ("DELETE", "/api/delete", b'{"model":"qwen3.5:4b"}'),
-            ("POST", "/api/copy", b'{"source":"qwen:a","destination":"qwen:b"}'),
         )
         for method, path, body in admitted:
             with self.subTest(path=path):
@@ -178,14 +178,14 @@ class MessagePolicyTests(unittest.TestCase):
             with self.subTest(body=body), self.assertRaises(PolicyDenied):
                 authorize_request_body("POST", "/api/show", body)
 
-    def test_pull_refuses_credentials_and_insecure_transport(self) -> None:
-        for body in (
-            b'{"model":"qwen","insecure":true}',
-            b'{"model":"qwen","username":"secret"}',
-            b'{"model":"qwen","password":"secret"}',
+    def test_model_transfer_routes_are_absent_until_shared_authority_exists(self) -> None:
+        for method, path in (
+            ("POST", "/api/pull"),
+            ("DELETE", "/api/delete"),
+            ("POST", "/api/copy"),
         ):
-            with self.subTest(body=body), self.assertRaises(PolicyDenied):
-                authorize_request_body("POST", "/api/pull", body)
+            with self.subTest(path=path), self.assertRaises(PolicyDenied):
+                authorize_route(method, path)
 
     def test_body_is_denied_on_bodyless_route(self) -> None:
         with self.assertRaises(PolicyDenied):

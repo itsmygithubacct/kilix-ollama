@@ -219,11 +219,11 @@ class Conversation:
             raise ConversationError("conversation messages is not a bounded array")
         messages = tuple(validate_message(message) for message in raw_messages)
         conversation = cls(identifier, title, model, created_at, updated_at, messages)
-        if len(_canonical(conversation.record())) > MAX_CONVERSATION_BYTES:
+        if len(_canonical(conversation.storage_record())) > MAX_CONVERSATION_BYTES:
             raise ConversationError("conversation exceeds its total byte limit")
         return conversation
 
-    def record(self) -> dict[str, object]:
+    def storage_record(self) -> dict[str, object]:
         return {
             "schema": CONVERSATION_SCHEMA,
             "schema_status": "development-unfrozen",
@@ -234,6 +234,15 @@ class Conversation:
             "updated_at": self.updated_at,
             "messages": list(self.messages),
         }
+
+    def record(self, *, include_thinking: bool = False) -> dict[str, object]:
+        record = self.storage_record()
+        if not include_thinking:
+            record["messages"] = [
+                {key: value for key, value in message.items() if key != "thinking"}
+                for message in self.messages
+            ]
+        return record
 
     def api_messages(self) -> list[dict[str, object]]:
         return [dict(message) for message in self.messages]
@@ -333,7 +342,7 @@ class ConversationStore:
         return conversation
 
     def _write_unlocked(self, conversation: Conversation, *, replace: bool) -> None:
-        payload = _canonical(conversation.record())
+        payload = _canonical(conversation.storage_record())
         if len(payload) > MAX_CONVERSATION_BYTES:
             raise ConversationError("conversation exceeds its total byte limit")
         target = self._path(conversation.identifier)
@@ -410,7 +419,7 @@ class ConversationStore:
                 now,
                 checked_messages,
             )
-            Conversation.from_record(conversation.record())
+            Conversation.from_record(conversation.storage_record())
             self._write_unlocked(conversation, replace=False)
             return conversation
 
@@ -435,7 +444,7 @@ class ConversationStore:
                 self._now(),
                 combined,
             )
-            Conversation.from_record(updated.record())
+            Conversation.from_record(updated.storage_record())
             self._write_unlocked(updated, replace=True)
             return updated
 

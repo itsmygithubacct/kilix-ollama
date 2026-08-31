@@ -178,7 +178,12 @@ class StreamResult:
     metrics: dict[str, int]
     event_count: int
 
-    def record(self, *, include_content: bool = True) -> dict[str, object]:
+    def record(
+        self,
+        *,
+        include_content: bool = True,
+        include_thinking: bool = False,
+    ) -> dict[str, object]:
         record: dict[str, object] = {
             "schema": "kilix.ollama.inference-result/v0-unfrozen",
             "schema_status": "development-unfrozen",
@@ -191,6 +196,7 @@ class StreamResult:
         }
         if include_content:
             record["content"] = self.content
+        if include_thinking:
             record["thinking"] = self.thinking
         return record
 
@@ -218,6 +224,14 @@ class StreamAccumulator:
             raise UpstreamProtocolError("stream accumulator route is invalid")
         if not isinstance(request_model, str) or not request_model:
             raise UpstreamProtocolError("stream request model is invalid")
+        try:
+            request_model_bytes = request_model.encode("ascii", errors="strict")
+        except UnicodeEncodeError as error:
+            raise UpstreamProtocolError("stream request model is not printable ASCII") from error
+        if len(request_model_bytes) > 1024 or any(
+            byte < 0x21 or byte > 0x7E for byte in request_model_bytes
+        ):
+            raise UpstreamProtocolError("stream request model is outside its ASCII bounds")
         if (
             not isinstance(max_text_bytes, int)
             or isinstance(max_text_bytes, bool)
@@ -268,8 +282,14 @@ class StreamAccumulator:
         model_value = event.get("model")
         if model_value is not None:
             model = _bounded_text(model_value, "response model", limit=1024)
-            if not model:
-                raise UpstreamProtocolError("upstream response model is empty")
+            try:
+                model_bytes = model.encode("ascii", errors="strict")
+            except UnicodeEncodeError as error:
+                raise UpstreamProtocolError("upstream response model is not printable ASCII") from error
+            if not model_bytes or any(byte < 0x21 or byte > 0x7E for byte in model_bytes):
+                raise UpstreamProtocolError("upstream response model is outside its ASCII bounds")
+            if model != self.request_model:
+                raise UpstreamProtocolError("upstream response model differs from the request")
             if self._response_model is not None and model != self._response_model:
                 raise UpstreamProtocolError("upstream changed model identity mid-stream")
             self._response_model = model

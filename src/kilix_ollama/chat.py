@@ -34,13 +34,13 @@ class ChatTurn:
     tool_calls: int
     tool_denials: int
 
-    def record(self) -> dict[str, object]:
+    def record(self, *, include_thinking: bool = False) -> dict[str, object]:
         return {
             "schema": "kilix.ollama.chat-turn/v0-unfrozen",
             "schema_status": "development-unfrozen",
             "conversation_id": self.conversation.identifier,
             "message_count": len(self.conversation.messages),
-            "result": self.result.record(),
+            "result": self.result.record(include_thinking=include_thinking),
             "tool_rounds": self.tool_rounds,
             "tool_calls": self.tool_calls,
             "tool_denials": self.tool_denials,

@@ -219,6 +219,50 @@ class ToolRegistryTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ToolError):
                 registry.execute(value, approve=lambda _preview: True)
 
+    def test_approval_preview_refuses_terminal_spoofing_controls(self) -> None:
+        registry = ToolRegistry()
+        approved = False
+
+        def approve(_preview) -> bool:
+            nonlocal approved
+            approved = True
+            return True
+
+        for expression in ("1\u202e+2", "1\x9b+2", "1\x1b[31m+2"):
+            with self.subTest(expression=repr(expression)), self.assertRaises(ToolError):
+                registry.execute(
+                    call("kilix.calculator", {"expression": expression}),
+                    approve=approve,
+                )
+        self.assertFalse(approved)
+
+    def test_intermediate_symlink_swap_after_approval_cannot_escape_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "selected"
+            nested = root / "nested"
+            outside = base / "outside"
+            nested.mkdir(parents=True)
+            outside.mkdir()
+            (nested / "note.txt").write_text("INSIDE", encoding="utf-8")
+            (outside / "note.txt").write_text("OUTSIDE_SELECTION", encoding="utf-8")
+            registry = ToolRegistry((root,))
+
+            def swap(_preview) -> bool:
+                nested.rename(root / "approved-original")
+                nested.symlink_to(outside, target_is_directory=True)
+                return True
+
+            outcome = registry.execute(
+                call(
+                    "kilix.read_selected_file",
+                    {"selection": 0, "path": "nested/note.txt"},
+                ),
+                approve=swap,
+            )
+            self.assertEqual(json.loads(outcome.content)["status"], "error")
+            self.assertNotIn("OUTSIDE_SELECTION", outcome.content)
+
     def test_selected_root_count_and_search_result_bounds_are_strict(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

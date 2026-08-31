@@ -172,7 +172,7 @@ class OllamaClientTests(unittest.TestCase):
         with self.assertRaises(RuntimeUnavailable):
             client.generate("local:latest", "prompt")
         requested_paths = [path for _method, path, _body in self.upstream.requests]
-        self.assertEqual(requested_paths.count("/api/version"), 1)
+        self.assertEqual(requested_paths.count("/api/version"), 5)
         self.assertNotIn("/api/generate", requested_paths)
 
     def test_explicit_development_candidate_streams_one_off_and_chat(self) -> None:
@@ -235,6 +235,22 @@ class OllamaClientTests(unittest.TestCase):
             OllamaClient(
                 self.paths, allow_unqualified_candidate=True, timeout=2
             ).show_model("local:latest")
+
+    def test_runtime_version_is_rechecked_for_every_protected_request(self) -> None:
+        client = OllamaClient(
+            self.paths, allow_unqualified_candidate=True, timeout=2
+        )
+        self.assertEqual(client.show_model("local:latest")["model_info"]["family"], "fixture")
+        self.upstream.responses["/api/version"] = (
+            200,
+            "application/json",
+            encoded({"version": "99.0.0"}),
+        )
+        with self.assertRaises(RuntimeUnavailable):
+            client.show_model("local:latest")
+        requested_paths = [path for _method, path, _body in self.upstream.requests]
+        self.assertEqual(requested_paths.count("/api/version"), 2)
+        self.assertEqual(requested_paths.count("/api/show"), 1)
 
     def test_cloud_control_and_invalid_model_names_fail_before_socket_request(self) -> None:
         initial = len(self.upstream.requests)

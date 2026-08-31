@@ -60,10 +60,11 @@ class CatalogTests(unittest.TestCase):
             {"name": "granite3.2-vision:2b"},
             {"name": "custom:latest", "digest": "e" * 64},
         )
-        projection = project_library(installed)
+        projection = project_library(installed, runtime_contacted=True)
         self.assertEqual(projection["curated_count"], 3)
         self.assertEqual(projection["installed_count"], 4)
         self.assertEqual(projection["installed_exact_count"], 1)
+        self.assertTrue(projection["runtime_contacted"])
         self.assertEqual(
             [entry["local_state"] for entry in projection["curated"]],
             ["installed-exact", "installed-digest-mismatch", "installed-unverified"],
@@ -84,6 +85,12 @@ class CatalogTests(unittest.TestCase):
                 else:
                     with self.assertRaises(RuntimeContractError):
                         project_library((record,))  # type: ignore[arg-type]
+        with self.assertRaises(RuntimeContractError):
+            project_library((), runtime_contacted=1)  # type: ignore[arg-type]
+
+    def test_empty_runtime_contact_is_distinct_from_offline_projection(self) -> None:
+        self.assertFalse(project_library(())["runtime_contacted"])
+        self.assertTrue(project_library((), runtime_contacted=True)["runtime_contacted"])
 
     def test_entry_validation_rejects_identity_licence_and_payload_drift(self) -> None:
         original = CURATED_MODELS[0]

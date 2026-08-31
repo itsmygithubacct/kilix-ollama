@@ -200,7 +200,9 @@ class OllamaClient:
     def _authorize(self, route: str) -> None:
         if route not in ROUTE_METHODS:
             raise RuntimeContractError(f"client route is not mediated: {route}")
-        version = self.version()
+        # Admission is per protected request. A cached health result must not
+        # survive a runtime restart or socket replacement.
+        version = self.version(refresh=True)
         compatibility = compatibility_for_version(version)
         if route in compatibility.allowed_routes:
             return
