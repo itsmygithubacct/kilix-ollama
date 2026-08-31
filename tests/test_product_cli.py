@@ -61,6 +61,17 @@ class _FakeClient:
         return result(self.content, thinking=self.thinking)
 
 
+class _BrokenStdout:
+    def write(self, _value: str) -> int:
+        raise BrokenPipeError
+
+    def flush(self) -> None:
+        raise BrokenPipeError
+
+    def fileno(self) -> int:
+        raise OSError("fixture has no descriptor")
+
+
 class ProductCliTests(unittest.TestCase):
     def invoke(self, *arguments: str) -> tuple[int, str, str]:
         stdout = io.StringIO()
@@ -177,6 +188,29 @@ class ProductCliTests(unittest.TestCase):
                 )
                 self.assertEqual(status, 2)
                 self.assertIn("--overwrite", stderr)
+
+    def test_broken_pipe_and_active_cancellation_have_fixed_exit_contracts(self) -> None:
+        client = _FakeClient("answer")
+        with mock.patch("kilix_ollama.cli.OllamaClient", return_value=client), mock.patch(
+            "sys.stdout", _BrokenStdout()
+        ):
+            self.assertEqual(
+                main(("ask", "local:latest", "prompt", "--development-runtime")),
+                0,
+            )
+
+        client.generate = mock.Mock(side_effect=KeyboardInterrupt)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("kilix_ollama.cli.OllamaClient", return_value=client), redirect_stdout(
+            stdout
+        ), redirect_stderr(stderr):
+            status = main(
+                ("ask", "local:latest", "prompt", "--development-runtime")
+            )
+        self.assertEqual(status, 130)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "kilix-ollama: cancelled\n")
 
     def test_one_turn_chat_persists_and_json_output_is_structured(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(

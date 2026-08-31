@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Sequence
@@ -43,6 +44,24 @@ def _json(value: object, *, compact: bool = False) -> str:
         indent=2,
         sort_keys=True,
     )
+
+
+def _silence_broken_stdout() -> None:
+    """Prevent interpreter shutdown from retrying a known-broken pipe."""
+
+    try:
+        stdout_descriptor = sys.stdout.fileno()
+    except (AttributeError, OSError, ValueError):
+        return
+    null_descriptor = -1
+    try:
+        null_descriptor = os.open(os.devnull, os.O_WRONLY | getattr(os, "O_CLOEXEC", 0))
+        os.dup2(null_descriptor, stdout_descriptor)
+    except OSError:
+        return
+    finally:
+        if null_descriptor >= 0:
+            os.close(null_descriptor)
 
 
 def _runtime_switch(parser: argparse.ArgumentParser) -> None:
@@ -580,7 +599,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"argv: {' '.join(spec.argv)}")
             return 0
     except BrokenPipeError:
+        _silence_broken_stdout()
         return 0
+    except KeyboardInterrupt:
+        print("kilix-ollama: cancelled", file=sys.stderr)
+        return 130
     except KilixOllamaError as error:
         print(f"kilix-ollama: {error}", file=sys.stderr)
         return 2
