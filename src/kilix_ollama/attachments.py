@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import base64
-import ctypes
 from dataclasses import dataclass
-import errno
 import hashlib
 import os
 from pathlib import Path
 import re
 import stat
 import struct
+import threading
 from types import MappingProxyType
 from typing import Mapping, Sequence
 import uuid
@@ -545,23 +544,7 @@ _DIRECTORY_FLAGS = (
     | getattr(os, "O_CLOEXEC", 0)
     | getattr(os, "O_NOFOLLOW", 0)
 )
-_PATH_DIRECTORY_FLAGS = (
-    os.O_DIRECTORY
-    | getattr(os, "O_CLOEXEC", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_PATH", 0)
-)
-_AT_EMPTY_PATH = 0x1000
-_LIBC = ctypes.CDLL(None, use_errno=True)
-_FCHMODAT = getattr(_LIBC, "fchmodat", None)
-if _FCHMODAT is not None:
-    _FCHMODAT.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-        ctypes.c_int,
-    )
-    _FCHMODAT.restype = ctypes.c_int
+_DIRECTORY_CREATION_LOCK = threading.Lock()
 
 
 def _directory_component_is_controlled(metadata: os.stat_result, *, uid: int) -> bool:
@@ -574,48 +557,37 @@ def _directory_component_is_controlled(metadata: os.stat_result, *, uid: int) ->
     )
 
 
-def _chmod_path_descriptor(descriptor: int, mode: int) -> None:
-    if _FCHMODAT is None or not getattr(os, "O_PATH", 0):
-        raise OSError(errno.ENOSYS, "descriptor-only directory chmod is unavailable")
-    ctypes.set_errno(0)
-    if _FCHMODAT(descriptor, b"", mode, _AT_EMPTY_PATH) != 0:
-        number = ctypes.get_errno() or errno.EIO
-        raise OSError(number, os.strerror(number))
+def _mkdir_private_directory(parent: int, component: str) -> None:
+    # umask is process-wide.  Serialize this one syscall and retain a private
+    # group/other mask even when the caller supplied a more restrictive mask.
+    with _DIRECTORY_CREATION_LOCK:
+        previous = os.umask(0o077)
+        try:
+            os.mkdir(component, mode=0o700, dir_fd=parent)
+        finally:
+            os.umask(previous)
 
 
 def _open_created_private_directory(parent: int, component: str, *, uid: int) -> int:
-    path_descriptor = -1
     child = -1
     try:
-        path_descriptor = os.open(
-            component,
-            _PATH_DIRECTORY_FLAGS,
-            dir_fd=parent,
-        )
-        created = os.fstat(path_descriptor)
-        if not stat.S_ISDIR(created.st_mode) or created.st_uid != uid:
-            raise ConversationError("created attachment directory was replaced")
-        _chmod_path_descriptor(path_descriptor, 0o700)
-        repaired = os.fstat(path_descriptor)
+        child = os.open(component, _DIRECTORY_FLAGS, dir_fd=parent)
+        created = os.fstat(child)
         if (
-            (created.st_dev, created.st_ino) != (repaired.st_dev, repaired.st_ino)
-            or repaired.st_uid != uid
-            or stat.S_IMODE(repaired.st_mode) != 0o700
+            not stat.S_ISDIR(created.st_mode)
+            or created.st_uid != uid
+            or stat.S_IMODE(created.st_mode) != 0o700
+            or created.st_ctime_ns != created.st_mtime_ns
         ):
-            raise ConversationError("created attachment directory changed")
-        child = os.open(".", _DIRECTORY_FLAGS, dir_fd=path_descriptor)
-        opened = os.fstat(child)
-        if (repaired.st_dev, repaired.st_ino) != (opened.st_dev, opened.st_ino):
-            raise ConversationError("created attachment directory changed while opening")
-        os.fchmod(child, 0o700)
+            raise ConversationError("created attachment directory was replaced")
+        with os.scandir(child) as entries:
+            if next(entries, None) is not None:
+                raise ConversationError("created attachment directory is not empty")
         return child
     except BaseException:
         if child >= 0:
             os.close(child)
         raise
-    finally:
-        if path_descriptor >= 0:
-            os.close(path_descriptor)
 
 
 def _open_private_directory(path: Path, *, uid: int, create: bool) -> int:
@@ -638,7 +610,7 @@ def _open_private_directory(path: Path, *, uid: int, create: bool) -> int:
                 parent = os.fstat(descriptor)
                 if not _directory_component_is_controlled(parent, uid=uid):
                     raise ConversationError("attachment storage parent is not controlled")
-                os.mkdir(component, mode=0o700, dir_fd=descriptor)
+                _mkdir_private_directory(descriptor, component)
                 child = _open_created_private_directory(
                     descriptor,
                     component,

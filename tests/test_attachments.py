@@ -321,10 +321,15 @@ class AttachmentStoreTests(unittest.TestCase):
             dir_fd=None,
         ):
             nonlocal swapped
-            if path == "data" and flags & getattr(os, "O_PATH", 0) and not swapped:
-                os.rmdir(path, dir_fd=dir_fd)
-                os.symlink("outside", path, dir_fd=dir_fd)
-                swapped = True
+            if path == "data" and flags & os.O_DIRECTORY and not swapped:
+                try:
+                    os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    os.rmdir(path, dir_fd=dir_fd)
+                    os.symlink("outside", path, dir_fd=dir_fd)
+                    swapped = True
             return real_open(
                 path,
                 flags,
@@ -357,16 +362,21 @@ class AttachmentStoreTests(unittest.TestCase):
             dir_fd=None,
         ):
             nonlocal swapped
-            if path == "data" and flags & getattr(os, "O_PATH", 0) and not swapped:
-                os.rmdir(path, dir_fd=dir_fd)
-                os.link(
-                    "unrelated",
-                    path,
-                    src_dir_fd=dir_fd,
-                    dst_dir_fd=dir_fd,
-                    follow_symlinks=False,
-                )
-                swapped = True
+            if path == "data" and flags & os.O_DIRECTORY and not swapped:
+                try:
+                    os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    os.rmdir(path, dir_fd=dir_fd)
+                    os.link(
+                        "unrelated",
+                        path,
+                        src_dir_fd=dir_fd,
+                        dst_dir_fd=dir_fd,
+                        follow_symlinks=False,
+                    )
+                    swapped = True
             return real_open(path, flags, mode, dir_fd=dir_fd)
 
         with mock.patch(
@@ -377,6 +387,91 @@ class AttachmentStoreTests(unittest.TestCase):
         self.assertTrue(swapped)
         self.assertEqual(unrelated.read_bytes(), b"owner data")
         self.assertEqual(stat.S_IMODE(unrelated.stat().st_mode), 0o644)
+
+    def test_created_directory_refuses_wrong_mode_same_owner_replacement(self) -> None:
+        source = self.selected("source.png", png_image())
+        unrelated = self.root / "unrelated-directory"
+        unrelated.mkdir(mode=0o755)
+        unrelated.chmod(0o755)
+        real_open = os.open
+        swapped = False
+
+        def swap_before_open(
+            path,
+            flags,
+            mode=0o777,
+            *,
+            dir_fd=None,
+        ):
+            nonlocal swapped
+            if path == "data" and flags & os.O_DIRECTORY and not swapped:
+                try:
+                    os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    os.rmdir(path, dir_fd=dir_fd)
+                    os.rename(
+                        "unrelated-directory",
+                        path,
+                        src_dir_fd=dir_fd,
+                        dst_dir_fd=dir_fd,
+                    )
+                    swapped = True
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch(
+            "kilix_ollama.attachments.os.open",
+            side_effect=swap_before_open,
+        ), self.assertRaises(ConversationError):
+            self.store.snapshot(source)
+        self.assertTrue(swapped)
+        replacement = self.root / "data"
+        self.assertEqual(stat.S_IMODE(replacement.stat().st_mode), 0o755)
+        self.assertEqual(tuple(replacement.iterdir()), ())
+
+    def test_created_directory_refuses_preexisting_private_replacement(self) -> None:
+        source = self.selected("source.png", png_image())
+        unrelated = self.root / "preexisting-private-directory"
+        unrelated.mkdir(mode=0o700)
+        unrelated.chmod(0o700)
+        os.utime(unrelated, ns=(1_700_000_000_000_000_000,) * 2)
+        real_open = os.open
+        swapped = False
+
+        def swap_before_open(
+            path,
+            flags,
+            mode=0o777,
+            *,
+            dir_fd=None,
+        ):
+            nonlocal swapped
+            if path == "data" and flags & os.O_DIRECTORY and not swapped:
+                try:
+                    os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    os.rmdir(path, dir_fd=dir_fd)
+                    os.rename(
+                        "preexisting-private-directory",
+                        path,
+                        src_dir_fd=dir_fd,
+                        dst_dir_fd=dir_fd,
+                    )
+                    swapped = True
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch(
+            "kilix_ollama.attachments.os.open",
+            side_effect=swap_before_open,
+        ), self.assertRaises(ConversationError):
+            self.store.snapshot(source)
+        self.assertTrue(swapped)
+        replacement = self.root / "data"
+        self.assertEqual(stat.S_IMODE(replacement.stat().st_mode), 0o700)
+        self.assertEqual(tuple(replacement.iterdir()), ())
 
     def test_tampered_snapshot_and_record_shapes_fail_closed(self) -> None:
         payload = jpeg_image()
