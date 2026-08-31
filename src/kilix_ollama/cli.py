@@ -26,6 +26,7 @@ from .sanitizer import TerminalSanitizer, sanitize_text
 from .service import build_launch_spec, service_contract_record
 from .streaming import StreamDelta
 from .tools import ToolPreview, ToolRegistry
+from .tui import run_tui
 
 
 def _json(value: object, *, compact: bool = False) -> str:
@@ -85,6 +86,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command")
+
+    commands.add_parser(
+        "tui",
+        help="open the local-only full-screen development interface",
+    )
 
     library = commands.add_parser("library", help="browse the exact artifact-free model catalog")
     library.add_argument("--installed", action="store_true", help="merge local installed state")
@@ -461,6 +467,8 @@ def _run(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return 0
     try:
+        if args.command == "tui":
+            return run_tui()
         if args.command == "library":
             return _library(args)
         if args.command == "models":

@@ -24,6 +24,9 @@ The implementation establishes these boundaries:
   never falls back to a cloud endpoint;
 - strict bounded NDJSON assembly and stateful terminal-control stripping across
   arbitrary streaming boundaries;
+- a local-only full-screen TUI spike with bounded fragmented input parsing,
+  Kitty-keyboard/bracketed-paste negotiation, control-free responsive frames,
+  and terminal restoration on normal exit or catchable signals;
 - owner-private, schema-checked, atomic conversation persistence and sanitized
   Markdown export;
 - four bounded read-only tools that require both session opt-in and per-call
@@ -72,6 +75,18 @@ candidate; it is reported as unqualified even when its metadata
 parses successfully.
 
 ## Local product commands
+
+Open the explicit development TUI in a real terminal. It contacts no runtime,
+downloads no model, and treats pasted input as inert until the external Kilix
+pane integration and prompt editor are accepted:
+
+```sh
+./kilix-ollama tui
+```
+
+The local TUI owns alternate-screen and terminal-mode cleanup. The separate
+real-Kilix nested-pane and hard-crash force-restore proof remains an external
+P9 gate.
 
 Browse the exact three-entry metadata catalog without contacting a runtime, or
 merge installed state from the private mediation socket:
@@ -237,7 +252,7 @@ accepted schema, broad hardware qualification, or CUDA-parity evidence.
 ## Current limits
 
 The conversation schema is implemented but remains v0 and unaccepted. There is
-no public daemon entry point, full-screen terminal UI, avatar UI,
+no public daemon entry point, release-admitted full-screen terminal UI, avatar UI,
 emotional-state or lip-motion integration, shared-authority model transfer, or
 release-admitted product voice. The terminal product, supervisor, live
 mediation server, shared arbiter, and synthesis runners are unfrozen candidates

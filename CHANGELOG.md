@@ -13,6 +13,9 @@
   default, and close descriptor-relative selected-root races.
 - Give broken output pipes and active user cancellation fixed, quiet command
   exit contracts.
+- Add a local-only full-screen TUI spike with bounded fragmented input,
+  responsive control-free rendering, inert bracketed paste, and deterministic
+  restoration on ordinary exits and catchable signals.
 - Add four disabled-by-default read-only tools with bounded schemas, explicit
   filesystem selections, per-call approval, and no shell, subprocess, network,
   or write capability.

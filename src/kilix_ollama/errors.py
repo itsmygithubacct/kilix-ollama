@@ -37,6 +37,10 @@ class ToolError(KilixOllamaError):
     """A bounded tool request was invalid, denied, or failed safely."""
 
 
+class TerminalError(KilixOllamaError):
+    """The terminal UI could not establish or restore a safe local session."""
+
+
 class AcceleratorQueueFull(KilixOllamaError):
     """The bounded shared-accelerator queue has no admission slot."""
 
@@ -80,6 +84,7 @@ __all__ = [
     "SupervisorError",
     "SynthesisCancelled",
     "SynthesisError",
+    "TerminalError",
     "ToolError",
     "UpstreamProtocolError",
 ]
