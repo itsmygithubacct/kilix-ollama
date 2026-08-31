@@ -9,6 +9,7 @@ import socketserver
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from kilix_ollama.adapter import CANDIDATE_VERSION
 from kilix_ollama.arbiter import AcceleratorArbiter
@@ -391,6 +392,17 @@ class OllamaClientTests(unittest.TestCase):
         for message in invalid:
             with self.subTest(message=list(message)), self.assertRaises(RuntimeContractError):
                 client.chat("local:latest", (message,), check_installed=False)
+
+        oversized_encoded = "A" * (4 * ((4 * 1024 * 1024 + 2) // 3) + 4)
+        with mock.patch(
+            "kilix_ollama.client.base64.b64decode",
+            side_effect=AssertionError("decoder reached for over-limit input"),
+        ), self.assertRaises(RuntimeContractError):
+            client.chat(
+                "local:latest",
+                ({"role": "user", "content": "x", "images": [oversized_encoded]},),
+                check_installed=False,
+            )
         self.assertEqual(len(self.upstream.requests), before)
 
 

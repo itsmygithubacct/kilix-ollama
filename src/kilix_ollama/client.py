@@ -47,6 +47,11 @@ from .streaming import (
 DEFAULT_TIMEOUT = 300.0
 MAX_CLIENT_MESSAGES = 512
 MAX_CLIENT_MESSAGE_BYTES = 8 * 1024 * 1024
+_MAX_ATTACHMENT_BASE64_CHARS = 4 * ((MAX_ATTACHMENT_BYTES + 2) // 3)
+_MAX_ATTACHMENT_TOTAL_BASE64_CHARS = (
+    4 * ((MAX_ATTACHMENT_TOTAL_BYTES + 2) // 3)
+    + 4 * (MAX_ATTACHMENTS_PER_MESSAGE - 1)
+)
 _STREAM_CONTENT_TYPES = frozenset(
     ("application/json", "application/jsonl", "application/x-jsonlines", "application/x-ndjson")
 )
@@ -102,9 +107,15 @@ def _validate_images(value: object) -> list[str]:
         raise RuntimeContractError("chat images are not a bounded array")
     checked: list[str] = []
     total = 0
+    encoded_total = 0
     for image in value:
         if not isinstance(image, str) or not image:
             raise RuntimeContractError("chat image is not base64 text")
+        if len(image) > _MAX_ATTACHMENT_BASE64_CHARS:
+            raise RuntimeContractError("chat image exceeds its encoded byte limit")
+        encoded_total += len(image)
+        if encoded_total > _MAX_ATTACHMENT_TOTAL_BASE64_CHARS:
+            raise RuntimeContractError("chat images exceed their encoded byte limit")
         try:
             encoded = image.encode("ascii", errors="strict")
             payload = base64.b64decode(encoded, validate=True)
