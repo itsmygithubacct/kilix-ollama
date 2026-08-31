@@ -75,7 +75,7 @@ class ChatEngineTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.identifiers = iter(("1" * 32, "2" * 32, "3" * 32))
+        self.identifiers = iter(("1" * 32, "2" * 32, "3" * 32, "4" * 32))
         self.store = ConversationStore(
             private_paths(self.root),
             clock=lambda: datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc),
@@ -242,7 +242,12 @@ class ChatEngineTests(unittest.TestCase):
         )
 
     def test_regenerate_replaces_only_the_last_completed_response_atomically(self) -> None:
-        client = _FakeClient([result("replacement", thinking="new private")])
+        client = _FakeClient(
+            [
+                result("replacement", thinking="new private"),
+                result("tool replacement"),
+            ]
+        )
         engine = ChatEngine(client, self.store)  # type: ignore[arg-type]
         conversation = engine.create(model="local:latest", title="Regenerate")
         conversation = self.store.append(
@@ -266,6 +271,30 @@ class ChatEngineTests(unittest.TestCase):
             ["first", "first answer", "last"],
         )
 
+        tool_call = {
+            "type": "function",
+            "function": {"name": "kilix.current_time", "arguments": {}},
+        }
+        completed_tool = engine.create(model="local:latest", title="Completed tool")
+        self.store.append(
+            completed_tool.identifier,
+            (
+                {"role": "user", "content": "use a tool"},
+                {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                {
+                    "role": "tool",
+                    "content": '{"status":"ok"}',
+                    "tool_name": "kilix.current_time",
+                },
+                {"role": "assistant", "content": "old tool answer"},
+            ),
+        )
+        tool_turn = engine.regenerate(completed_tool.identifier)
+        self.assertEqual(
+            [message["content"] for message in tool_turn.conversation.messages],
+            ["use a tool", "tool replacement"],
+        )
+
         incomplete = engine.create(model="local:latest", title="Incomplete")
         self.store.append(
             incomplete.identifier,
@@ -273,6 +302,24 @@ class ChatEngineTests(unittest.TestCase):
         )
         with self.assertRaises(ConversationError):
             engine.regenerate(incomplete.identifier)
+
+        unfinished_tool = engine.create(model="local:latest", title="Unfinished tool")
+        unfinished_tool = self.store.append(
+            unfinished_tool.identifier,
+            (
+                {"role": "user", "content": "use a tool"},
+                {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                {
+                    "role": "tool",
+                    "content": '{"status":"ok"}',
+                    "tool_name": "kilix.current_time",
+                },
+            ),
+        )
+        with self.assertRaises(ConversationError):
+            engine.regenerate(unfinished_tool.identifier)
+        self.assertEqual(self.store.load(unfinished_tool.identifier), unfinished_tool)
+        self.assertEqual(len(client.chat_calls), 2)
 
     def test_model_switch_requires_installed_target_before_atomic_mutation(self) -> None:
         client = _FakeClient([])

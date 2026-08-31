@@ -18,6 +18,31 @@ from .tools import (
 )
 
 
+def _completed_response_suffix(messages: tuple[dict[str, object], ...]) -> bool:
+    if not messages or messages[0]["role"] != "assistant":
+        return False
+    pending_tools = 0
+    for index, message in enumerate(messages):
+        role = message["role"]
+        if pending_tools:
+            if role != "tool":
+                return False
+            pending_tools -= 1
+            continue
+        if role != "assistant":
+            return False
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
+            pending_tools = len(tool_calls)  # type: ignore[arg-type]
+        elif index != len(messages) - 1:
+            return False
+    return (
+        pending_tools == 0
+        and messages[-1]["role"] == "assistant"
+        and not messages[-1].get("tool_calls")
+    )
+
+
 def conversation_title(prompt: str) -> str:
     line = sanitize_text(prompt).strip().splitlines()[0] if prompt.strip() else "New chat"
     if len(line) > 72:
@@ -183,7 +208,7 @@ class ChatEngine:
             -1,
         )
         suffix = conversation.messages[last_user + 1 :] if last_user >= 0 else ()
-        if last_user < 0 or not any(message["role"] == "assistant" for message in suffix):
+        if last_user < 0 or not _completed_response_suffix(suffix):
             raise ConversationError("conversation has no completed response to regenerate")
         messages = [dict(message) for message in conversation.messages[: last_user + 1]]
         return self._complete(
