@@ -190,7 +190,10 @@ class ConversationStoreTests(unittest.TestCase):
     def test_attachment_metadata_is_typed_forked_and_omitted_from_markdown(self) -> None:
         source = self.root / "private-name.png"
         source.write_bytes(png_image(3, 2))
-        attachment = AttachmentStore(self.paths).snapshot(source)
+        attachment_store = AttachmentStore(self.paths)
+        attachment_store.root.mkdir(parents=True, mode=0o700)
+        attachment_store.root.chmod(0o700)
+        attachment = attachment_store.snapshot(source)
         conversation = self.store.create(model="vision:latest", title="Image")
         conversation = self.store.append(
             conversation.identifier,

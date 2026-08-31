@@ -287,6 +287,11 @@ class ProductCliTests(unittest.TestCase):
             source = Path(directory) / "PRIVATE-NAME.png"
             payload = png_image(3, 2)
             source.write_bytes(payload)
+            attachment_root = (
+                Path(directory) / "data/kilix-ollama/attachments"
+            )
+            attachment_root.mkdir(parents=True, mode=0o700)
+            attachment_root.chmod(0o700)
             client = _FakeClient("description")
             with mock.patch("kilix_ollama.cli.OllamaClient", return_value=client):
                 status, stdout, stderr = self.invoke(

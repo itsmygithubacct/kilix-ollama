@@ -342,6 +342,8 @@ class ChatEngineTests(unittest.TestCase):
         source = self.root / "private-name.png"
         source.write_bytes(payload)
         attachment_store = AttachmentStore(private_paths(self.root))
+        attachment_store.root.mkdir(parents=True, mode=0o700)
+        attachment_store.root.chmod(0o700)
         client = _FakeClient([result("first"), result("second")])
         engine = ChatEngine(  # type: ignore[arg-type]
             client,

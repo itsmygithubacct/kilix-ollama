@@ -10,7 +10,6 @@ from pathlib import Path
 import re
 import stat
 import struct
-import threading
 from types import MappingProxyType
 from typing import Mapping, Sequence
 import uuid
@@ -544,7 +543,6 @@ _DIRECTORY_FLAGS = (
     | getattr(os, "O_CLOEXEC", 0)
     | getattr(os, "O_NOFOLLOW", 0)
 )
-_DIRECTORY_CREATION_LOCK = threading.Lock()
 
 
 def _directory_component_is_controlled(metadata: os.stat_result, *, uid: int) -> bool:
@@ -557,40 +555,7 @@ def _directory_component_is_controlled(metadata: os.stat_result, *, uid: int) ->
     )
 
 
-def _mkdir_private_directory(parent: int, component: str) -> None:
-    # umask is process-wide.  Serialize this one syscall and retain a private
-    # group/other mask even when the caller supplied a more restrictive mask.
-    with _DIRECTORY_CREATION_LOCK:
-        previous = os.umask(0o077)
-        try:
-            os.mkdir(component, mode=0o700, dir_fd=parent)
-        finally:
-            os.umask(previous)
-
-
-def _open_created_private_directory(parent: int, component: str, *, uid: int) -> int:
-    child = -1
-    try:
-        child = os.open(component, _DIRECTORY_FLAGS, dir_fd=parent)
-        created = os.fstat(child)
-        if (
-            not stat.S_ISDIR(created.st_mode)
-            or created.st_uid != uid
-            or stat.S_IMODE(created.st_mode) != 0o700
-            or created.st_ctime_ns != created.st_mtime_ns
-        ):
-            raise ConversationError("created attachment directory was replaced")
-        with os.scandir(child) as entries:
-            if next(entries, None) is not None:
-                raise ConversationError("created attachment directory is not empty")
-        return child
-    except BaseException:
-        if child >= 0:
-            os.close(child)
-        raise
-
-
-def _open_private_directory(path: Path, *, uid: int, create: bool) -> int:
+def _open_private_directory(path: Path, *, uid: int) -> int:
     if not path.is_absolute() or not path.parts or path.parts[0] != path.anchor:
         raise ConversationError("attachment storage path must be absolute")
     components = path.parts[1:]
@@ -601,27 +566,14 @@ def _open_private_directory(path: Path, *, uid: int, create: bool) -> int:
         descriptor = os.open(path.anchor, _DIRECTORY_FLAGS)
         for index, component in enumerate(components):
             final = index == len(components) - 1
-            created = False
             try:
                 child = os.open(component, _DIRECTORY_FLAGS, dir_fd=descriptor)
             except FileNotFoundError:
-                if not create:
-                    raise ConversationError("attachment directory does not exist")
-                parent = os.fstat(descriptor)
-                if not _directory_component_is_controlled(parent, uid=uid):
-                    raise ConversationError("attachment storage parent is not controlled")
-                _mkdir_private_directory(descriptor, component)
-                child = _open_created_private_directory(
-                    descriptor,
-                    component,
-                    uid=uid,
-                )
-                created = True
+                raise ConversationError("attachment directory is not provisioned")
             metadata = os.fstat(child)
             mode = stat.S_IMODE(metadata.st_mode)
             if (
                 not _directory_component_is_controlled(metadata, uid=uid)
-                or (created and (metadata.st_uid != uid or mode != 0o700))
                 or (final and (metadata.st_uid != uid or mode != 0o700))
             ):
                 os.close(child)
@@ -640,7 +592,7 @@ def _open_private_directory(path: Path, *, uid: int, create: bool) -> int:
 
 
 def _verify_private_directory(path: Path, descriptor: int, *, uid: int) -> None:
-    verification = _open_private_directory(path, uid=uid, create=False)
+    verification = _open_private_directory(path, uid=uid)
     try:
         expected = os.fstat(descriptor)
         observed = os.fstat(verification)
@@ -815,7 +767,7 @@ class AttachmentStore:
         descriptor = -1
         temporary: str | None = None
         try:
-            directory = _open_private_directory(self.root, uid=self.uid, create=True)
+            directory = _open_private_directory(self.root, uid=self.uid)
             target = self._target_name(record)
             try:
                 os.stat(target, dir_fd=directory, follow_symlinks=False)
@@ -945,7 +897,7 @@ class AttachmentStore:
         record = validate_attachment_record(value)
         directory = -1
         try:
-            directory = _open_private_directory(self.root, uid=self.uid, create=False)
+            directory = _open_private_directory(self.root, uid=self.uid)
             payload = self._read_at(record, directory)
             _verify_private_directory(self.root, directory, uid=self.uid)
             return payload
@@ -957,7 +909,7 @@ class AttachmentStore:
         records = validate_attachment_records(value)
         directory = -1
         try:
-            directory = _open_private_directory(self.root, uid=self.uid, create=False)
+            directory = _open_private_directory(self.root, uid=self.uid)
             images = [
                 base64.b64encode(self._read_at(record, directory)).decode("ascii")
                 for record in records
