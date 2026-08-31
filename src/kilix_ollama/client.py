@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import http.client
 import json
 import os
@@ -17,6 +19,12 @@ from .adapter import (
     decode_json_object,
     parse_model_list,
     parse_version,
+)
+from .attachments import (
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENT_TOTAL_BYTES,
+    MAX_ATTACHMENTS_PER_MESSAGE,
+    inspect_image,
 )
 from .conversations import validate_message
 from .errors import (
@@ -84,6 +92,39 @@ def _content_type(response: http.client.HTTPResponse) -> str | None:
             raise UpstreamProtocolError("local runtime repeated Content-Type")
         found = value.split(";", 1)[0].strip().casefold()
     return found
+
+
+def _validate_images(value: object) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or not 1 <= len(value) <= MAX_ATTACHMENTS_PER_MESSAGE
+    ):
+        raise RuntimeContractError("chat images are not a bounded array")
+    checked: list[str] = []
+    total = 0
+    for image in value:
+        if not isinstance(image, str) or not image:
+            raise RuntimeContractError("chat image is not base64 text")
+        try:
+            encoded = image.encode("ascii", errors="strict")
+            payload = base64.b64decode(encoded, validate=True)
+        except (UnicodeEncodeError, binascii.Error, ValueError) as error:
+            raise RuntimeContractError("chat image is not canonical base64") from error
+        if base64.b64encode(payload) != encoded:
+            raise RuntimeContractError("chat image is not canonical base64")
+        if not 1 <= len(payload) <= MAX_ATTACHMENT_BYTES:
+            raise RuntimeContractError("chat image exceeds its byte limit")
+        try:
+            inspect_image(payload)
+        except ConversationError as error:
+            raise RuntimeContractError(str(error)) from error
+        total += len(payload)
+        if total > MAX_ATTACHMENT_TOTAL_BYTES:
+            raise RuntimeContractError("chat images exceed their total byte limit")
+        if image in checked:
+            raise RuntimeContractError("chat images repeat the same payload")
+        checked.append(image)
+    return checked
 
 
 class OllamaClient:
@@ -251,11 +292,24 @@ class OllamaClient:
             raise RuntimeContractError("chat message count is outside its bounds")
         checked: list[dict[str, object]] = []
         for message in messages:
+            if not isinstance(message, Mapping):
+                raise RuntimeContractError("chat message is not an object")
+            raw = dict(message)
+            if "attachments" in raw:
+                raise RuntimeContractError(
+                    "stored attachment records must be resolved by the private attachment store"
+                )
+            has_images = "images" in raw
+            images = raw.pop("images", None)
             try:
-                stored = validate_message(message)
+                stored = validate_message(raw)
             except ConversationError as error:
                 raise RuntimeContractError(str(error)) from error
             wire = {key: value for key, value in stored.items() if key != "thinking"}
+            if has_images:
+                if stored["role"] != "user":
+                    raise RuntimeContractError("only a user chat message may contain images")
+                wire["images"] = _validate_images(images)
             checked.append(wire)
         if len(_json_bytes(checked)) > MAX_CLIENT_MESSAGE_BYTES:
             raise RuntimeContractError("chat context exceeds its byte limit")

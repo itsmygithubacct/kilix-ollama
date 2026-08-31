@@ -10,6 +10,7 @@ import sys
 from typing import Sequence
 
 from . import __version__, tts_artifacts
+from .attachments import AttachmentStore
 from .backend import inspect_vulkan, select_backend
 from .capacity import co_residency_record
 from .catalog import find_entry, project_library
@@ -136,6 +137,14 @@ def _parser() -> argparse.ArgumentParser:
         help="switch an existing conversation after verifying the model is installed",
     )
     chat.add_argument("--json", action="store_true", help="requires --message or --regenerate")
+    chat.add_argument(
+        "--attach",
+        action="append",
+        default=[],
+        type=Path,
+        metavar="IMAGE",
+        help="snapshot one explicit PNG/JPEG for --message; repeatable",
+    )
     chat.add_argument("--tools", action="store_true", help="offer the bounded read-only registry")
     chat.add_argument(
         "--tool-root",
@@ -384,12 +393,14 @@ def _chat(args: argparse.Namespace) -> int:
         raise RuntimeContractError("switch the model before requesting regeneration")
     if args.regenerate and args.conversation is None:
         raise RuntimeContractError("--regenerate requires --conversation")
+    if args.attach and args.message is None:
+        raise RuntimeContractError("--attach requires --message")
     if args.message is None and not args.regenerate and not sys.stdin.isatty():
         raise RuntimeContractError("interactive chat requires a terminal; use --message")
     paths = RuntimePaths.from_environment()
     client = OllamaClient(paths, allow_unqualified_candidate=args.development_runtime)
     store = ConversationStore(paths)
-    engine = ChatEngine(client, store)
+    engine = ChatEngine(client, store, AttachmentStore(paths))
     if args.conversation:
         conversation = store.load(args.conversation)
         if args.model is not None and args.model != conversation.model:
@@ -402,7 +413,8 @@ def _chat(args: argparse.Namespace) -> int:
     else:
         if args.model is None:
             raise RuntimeContractError("a model is required for a new conversation")
-        client.require_installed(args.model)
+        if args.message is None:
+            client.require_installed(args.model)
         title = args.title or conversation_title(args.message or "New chat")
         conversation = engine.create(model=args.model, title=title)
     registry = ToolRegistry(args.tool_root) if args.tools else None
@@ -413,6 +425,7 @@ def _chat(args: argparse.Namespace) -> int:
         *,
         machine: bool,
         regenerate: bool = False,
+        attachment_paths: Sequence[Path] = (),
     ) -> None:
         sanitizer = TerminalSanitizer()
 
@@ -435,7 +448,12 @@ def _chat(args: argparse.Namespace) -> int:
             turn = engine.regenerate(conversation.identifier, **turn_options)
         else:
             assert prompt is not None
-            turn = engine.turn(conversation.identifier, prompt, **turn_options)
+            turn = engine.turn(
+                conversation.identifier,
+                prompt,
+                attachment_paths=attachment_paths,
+                **turn_options,
+            )
         sanitizer.finish()
         if machine:
             print(_json(turn.record()))
@@ -443,7 +461,7 @@ def _chat(args: argparse.Namespace) -> int:
             print()
 
     if args.message is not None:
-        run(args.message, machine=args.json)
+        run(args.message, machine=args.json, attachment_paths=args.attach)
         return 0
     if args.regenerate:
         run(None, machine=args.json, regenerate=True)

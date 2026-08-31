@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from kilix_ollama.attachments import AttachmentStore
 from kilix_ollama.conversations import (
     ConversationStore,
     MAX_MESSAGE_BYTES,
@@ -16,6 +17,7 @@ from kilix_ollama.conversations import (
 )
 from kilix_ollama.errors import ConversationError
 from kilix_ollama.paths import RuntimePaths
+from tests.image_fixtures import png_image
 
 
 def private_paths(root: Path) -> RuntimePaths:
@@ -184,6 +186,46 @@ class ConversationStoreTests(unittest.TestCase):
             conversation.identifier, include_thinking=True
         )
         self.assertIn("secret thought", explicit)
+
+    def test_attachment_metadata_is_typed_forked_and_omitted_from_markdown(self) -> None:
+        source = self.root / "private-name.png"
+        source.write_bytes(png_image(3, 2))
+        attachment = AttachmentStore(self.paths).snapshot(source)
+        conversation = self.store.create(model="vision:latest", title="Image")
+        conversation = self.store.append(
+            conversation.identifier,
+            (
+                {
+                    "role": "user",
+                    "content": "describe",
+                    "attachments": [attachment],
+                },
+                {"role": "assistant", "content": "description"},
+            ),
+        )
+        self.assertEqual(
+            conversation.messages[0]["attachments"],
+            [attachment],
+        )
+        forked = self.store.fork(conversation.identifier)
+        self.assertEqual(forked.messages, conversation.messages)
+        markdown = self.store.export_markdown(conversation.identifier)
+        self.assertIn("Attachments omitted from Markdown export (1 image(s)).", markdown)
+        self.assertNotIn(str(attachment["digest"]), markdown)
+        self.assertNotIn("private-name", json.dumps(conversation.storage_record()))
+
+        for message in (
+            {"role": "assistant", "content": "x", "attachments": [attachment]},
+            {"role": "user", "content": "x", "attachments": []},
+            {"role": "user", "content": "x", "attachments": None},
+            {
+                "role": "user",
+                "content": "x",
+                "attachments": [attachment, attachment],
+            },
+        ):
+            with self.subTest(message=message), self.assertRaises(ConversationError):
+                validate_message(message)
 
     def test_delete_removes_only_the_exact_verified_conversation(self) -> None:
         conversation = self.store.create(model="local", title="Delete")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import http.server
 import json
 import os
@@ -19,6 +20,7 @@ from kilix_ollama.errors import (
 )
 from kilix_ollama.mediation import MediationProxy
 from kilix_ollama.paths import RuntimePaths
+from tests.image_fixtures import png_image
 
 
 def private_paths(root: Path) -> RuntimePaths:
@@ -352,6 +354,44 @@ class OllamaClientTests(unittest.TestCase):
                 tools=tuple({"type": "function"} for _ in range(17)),
                 check_installed=False,
             )
+
+    def test_chat_images_are_canonical_bounded_and_never_accept_storage_records(self) -> None:
+        client = OllamaClient(
+            self.paths,
+            allow_unqualified_candidate=True,
+            timeout=2,
+        )
+        image = base64.b64encode(png_image(3, 2)).decode("ascii")
+        result = client.chat(
+            "local:latest",
+            ({"role": "user", "content": "describe", "images": [image]},),
+            check_installed=False,
+        )
+        self.assertEqual(result.content, "answer")
+        request = next(
+            json.loads(body)
+            for method, path, body in self.upstream.requests
+            if method == "POST" and path == "/api/chat"
+        )
+        self.assertEqual(request["messages"][0]["images"], [image])
+
+        before = len(self.upstream.requests)
+        invalid = (
+            {"role": "assistant", "content": "x", "images": [image]},
+            {"role": "user", "content": "x", "images": [image, image]},
+            {"role": "user", "content": "x", "images": ["not base64!"]},
+            {"role": "user", "content": "x", "images": None},
+            {
+                "role": "user",
+                "content": "x",
+                "images": [base64.b64encode(b"not an image").decode("ascii")],
+            },
+            {"role": "user", "content": "x", "attachments": []},
+        )
+        for message in invalid:
+            with self.subTest(message=list(message)), self.assertRaises(RuntimeContractError):
+                client.chat("local:latest", (message,), check_installed=False)
+        self.assertEqual(len(self.upstream.requests), before)
 
 
 if __name__ == "__main__":

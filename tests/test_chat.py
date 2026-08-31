@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timezone
 import json
 import os
@@ -8,11 +9,13 @@ import tempfile
 import unittest
 
 from kilix_ollama.chat import ChatEngine, conversation_title
+from kilix_ollama.attachments import AttachmentStore
 from kilix_ollama.conversations import ConversationStore, MAX_MESSAGE_BYTES
 from kilix_ollama.errors import ConversationError, RuntimeUnavailable, ToolError
 from kilix_ollama.paths import RuntimePaths
 from kilix_ollama.streaming import StreamDelta, StreamResult
 from kilix_ollama.tools import ToolRegistry
+from tests.image_fixtures import png_image
 
 
 def private_paths(root: Path) -> RuntimePaths:
@@ -333,6 +336,56 @@ class ChatEngineTests(unittest.TestCase):
             unavailable_engine.regenerate(unfinished_tool.identifier)
         self.assertEqual(unavailable_client.install_checks, [])
         self.assertEqual(unavailable_client.chat_calls, [])
+
+    def test_image_snapshots_are_resolved_for_wire_reuse_and_fail_closed_on_tamper(self) -> None:
+        payload = png_image(3, 2)
+        source = self.root / "private-name.png"
+        source.write_bytes(payload)
+        attachment_store = AttachmentStore(private_paths(self.root))
+        client = _FakeClient([result("first"), result("second")])
+        engine = ChatEngine(  # type: ignore[arg-type]
+            client,
+            self.store,
+            attachment_store,
+        )
+        conversation = engine.create(model="local:latest", title="Image")
+        first = engine.turn(
+            conversation.identifier,
+            "describe",
+            attachment_paths=(source,),
+        )
+        first_wire = client.chat_calls[0][1][0]
+        self.assertEqual(base64.b64decode(first_wire["images"][0]), payload)
+        self.assertNotIn("attachments", first_wire)
+        stored_user = first.conversation.messages[0]
+        self.assertIn("attachments", stored_user)
+        self.assertNotIn("images", stored_user)
+        self.assertNotIn(str(source), str(stored_user))
+
+        second = engine.turn(conversation.identifier, "again")
+        self.assertEqual(
+            base64.b64decode(client.chat_calls[1][1][0]["images"][0]),
+            payload,
+        )
+        self.assertNotIn("images", second.conversation.messages[0])
+
+        record = second.conversation.messages[0]["attachments"][0]
+        target = attachment_store.root / str(record["digest"]).removeprefix("sha256:")
+        target.write_bytes(b"x" * len(payload))
+        before_checks = len(client.install_checks)
+        before_calls = len(client.chat_calls)
+        before_storage = self.store.load(conversation.identifier)
+        with self.assertRaises(ConversationError):
+            engine.turn(conversation.identifier, "tampered")
+        self.assertEqual(len(client.install_checks), before_checks)
+        self.assertEqual(len(client.chat_calls), before_calls)
+        self.assertEqual(self.store.load(conversation.identifier), before_storage)
+
+        no_store = ChatEngine(client, self.store)  # type: ignore[arg-type]
+        empty = no_store.create(model="local:latest", title="No store")
+        with self.assertRaises(ConversationError):
+            no_store.turn(empty.identifier, "image", attachment_paths=(source,))
+        self.assertEqual(len(client.install_checks), before_checks)
 
     def test_model_switch_requires_installed_target_before_atomic_mutation(self) -> None:
         client = _FakeClient([])

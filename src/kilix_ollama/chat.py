@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from pathlib import Path
+from typing import Callable, Sequence
 
+from .attachments import AttachmentStore
 from .client import OllamaClient, validate_model_name
 from .conversations import Conversation, ConversationStore, validate_message
 from .errors import ConversationError, ToolError
@@ -83,13 +85,32 @@ class ChatEngine:
         self,
         client: OllamaClient,
         store: ConversationStore,
+        attachment_store: AttachmentStore | None = None,
     ) -> None:
         self.client = client
         self.store = store
+        self.attachment_store = attachment_store
 
     def create(self, *, model: str, title: str | None = None) -> Conversation:
         checked = validate_model_name(model)
         return self.store.create(model=checked, title=title or "New chat")
+
+    def _wire_messages(
+        self,
+        messages: Sequence[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        wire: list[dict[str, object]] = []
+        for message in messages:
+            resolved = dict(message)
+            attachments = resolved.pop("attachments", None)
+            if attachments is not None:
+                if self.attachment_store is None:
+                    raise ConversationError(
+                        "conversation attachments require the private attachment store"
+                    )
+                resolved["images"] = self.attachment_store.wire_images(attachments)
+            wire.append(resolved)
+        return wire
 
     def _complete(
         self,
@@ -112,7 +133,7 @@ class ChatEngine:
         while True:
             result = self.client.chat(
                 conversation.model,
-                messages,
+                self._wire_messages(messages),
                 tools=declarations,
                 temperature=temperature,
                 seed=seed,
@@ -166,14 +187,25 @@ class ChatEngine:
         temperature: float | None = None,
         seed: int | None = None,
         context: int | None = None,
+        attachment_paths: Sequence[Path] = (),
     ) -> ChatTurn:
         if not isinstance(prompt, str) or not prompt:
             raise ToolError("chat prompt must not be empty")
-        user_message = validate_message({"role": "user", "content": prompt})
         conversation = self.store.load(conversation_id)
-        self.client.require_installed(conversation.model)
+        user: dict[str, object] = {"role": "user", "content": prompt}
+        if attachment_paths:
+            if self.attachment_store is None:
+                raise ConversationError(
+                    "chat attachments require the private attachment store"
+                )
+            user["attachments"] = list(
+                self.attachment_store.snapshot_many(attachment_paths)
+            )
+        user_message = validate_message(user)
         messages = conversation.api_messages()
         messages.append(user_message)
+        self._wire_messages(messages)
+        self.client.require_installed(conversation.model)
         return self._complete(
             conversation,
             messages,
@@ -209,8 +241,9 @@ class ChatEngine:
         suffix = conversation.messages[last_user + 1 :] if last_user >= 0 else ()
         if last_user < 0 or not _completed_response_suffix(suffix):
             raise ConversationError("conversation has no completed response to regenerate")
-        self.client.require_installed(conversation.model)
         messages = [dict(message) for message in conversation.messages[: last_user + 1]]
+        self._wire_messages(messages)
+        self.client.require_installed(conversation.model)
         return self._complete(
             conversation,
             messages,

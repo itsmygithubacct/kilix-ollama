@@ -16,6 +16,8 @@
 - Make complete chat turns atomic under concurrent writers, retain prior state
   on cancellation/failure, and add bounded regenerate, conversation fork, and
   installed-target model-switch workflows.
+- Add explicitly selected PNG/JPEG chat attachments as digest-addressed
+  owner-private snapshots with byte, pixel, count, wire, and tamper bounds.
 - Add a local-only full-screen TUI spike with bounded fragmented input,
   responsive control-free rendering, inert bracketed paste, and deterministic
   restoration on ordinary exits and catchable signals.

@@ -14,6 +14,7 @@ import stat
 from typing import Callable, Iterable, Iterator, Mapping
 import uuid
 
+from .attachments import validate_attachment_records
 from .errors import ConversationError
 from .paths import RuntimePaths
 from .sanitizer import sanitize_text
@@ -26,7 +27,9 @@ MAX_MESSAGES = 4096
 MAX_TITLE_BYTES = 256
 _IDENTIFIER = re.compile(r"[0-9a-f]{32}\Z")
 _ROLES = frozenset(("assistant", "system", "tool", "user"))
-_MESSAGE_KEYS = frozenset(("content", "role", "thinking", "tool_calls", "tool_name"))
+_MESSAGE_KEYS = frozenset(
+    ("attachments", "content", "role", "thinking", "tool_calls", "tool_name")
+)
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -175,6 +178,11 @@ def validate_message(value: Mapping[str, object]) -> dict[str, object]:
         result["tool_name"] = name
     if role == "tool" and "tool_name" not in result:
         raise ConversationError("tool message has no tool name")
+    if "attachments" in value:
+        attachments = value["attachments"]
+        if role != "user":
+            raise ConversationError("only a user message may contain attachments")
+        result["attachments"] = validate_attachment_records(attachments)
     return result
 
 
@@ -600,6 +608,9 @@ class ConversationStore:
                 lines.extend(("### Thinking (explicitly included)", "", sanitize_text(str(message["thinking"])), ""))
             if message.get("tool_calls"):
                 lines.extend(("Tool-call metadata omitted from Markdown export.", ""))
+            if message.get("attachments"):
+                count = len(message["attachments"])  # type: ignore[arg-type]
+                lines.extend((f"Attachments omitted from Markdown export ({count} image(s)).", ""))
         return "\n".join(lines).rstrip() + "\n"
 
 

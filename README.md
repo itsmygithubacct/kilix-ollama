@@ -29,6 +29,9 @@ The implementation establishes these boundaries:
   and terminal restoration on normal exit or catchable signals;
 - owner-private, schema-checked, atomic conversation persistence and sanitized
   Markdown export;
+- explicitly selected PNG/JPEG chat images copied into path-free,
+  digest-addressed owner-private snapshots with byte, pixel, count, and tamper
+  limits;
 - four bounded read-only tools that require both session opt-in and per-call
   approval, with no shell, subprocess, network, or write tool;
 - one shared, bounded accelerator arbiter that finishes an admitted LLM turn
@@ -115,6 +118,7 @@ owner-private conversation store:
 ```sh
 ./kilix-ollama chat granite4.1:3b --development-runtime
 ./kilix-ollama chat granite4.1:3b --development-runtime --message 'Hello' --json
+./kilix-ollama chat granite3.2-vision:2b --development-runtime --message 'Describe this.' --attach image.png --json
 ./kilix-ollama chat --conversation CONVERSATION_ID --regenerate --json --development-runtime
 ./kilix-ollama chat --conversation CONVERSATION_ID --switch-model granite3.2-vision:2b --message 'Continue' --json --development-runtime
 ./kilix-ollama conversations list
@@ -129,6 +133,16 @@ Regeneration replaces only the suffix after the last user message. Forking
 refuses a prefix that splits a tool exchange, and model switching verifies the
 target is installed before it changes stored state. Interactive chat also
 accepts `/regenerate`, `/fork`, and `/model MODEL`.
+
+`--attach` accepts up to four explicitly selected PNG/JPEG files for a scripted
+`--message`. The client opens each selection once without following a final
+symlink, enforces per-file and aggregate byte limits plus bounded image
+dimensions/pixels, and copies it into a mode-0600 content-addressed snapshot in
+an owner-only directory. Conversation records retain only typed digest, media,
+size and dimension metadata—never the selected path or filename. Every reuse
+rechecks the snapshot digest and image metadata before runtime contact.
+Markdown export states the omitted image count and never embeds attachment
+bytes implicitly.
 
 `--tools` offers exactly four read-only tools: UTC time, bounded arithmetic,
 reading an explicitly selected text file, and bounded search beneath an
@@ -262,8 +276,10 @@ accepted schema, broad hardware qualification, or CUDA-parity evidence.
 
 ## Current limits
 
-The conversation schema is implemented but remains v0 and unaccepted. Chat
-attachments are not implemented yet. There is
+The conversation and attachment schemas are implemented but remain v0 and
+unaccepted. Generic document attachments, interactive/TUI attachment selection,
+image placement, owned-snapshot garbage collection, and attachment-inclusive
+exports are not implemented yet. There is
 no public daemon entry point, release-admitted full-screen terminal UI, avatar UI,
 emotional-state or lip-motion integration, shared-authority model transfer, or
 release-admitted product voice. The terminal product, supervisor, live

@@ -13,6 +13,7 @@ from unittest import mock
 
 from kilix_ollama.cli import main
 from kilix_ollama.streaming import StreamDelta, StreamResult
+from tests.image_fixtures import png_image
 
 
 def result(content: str, *, thinking: str = "") -> StreamResult:
@@ -34,6 +35,7 @@ class _FakeClient:
         self.thinking = thinking
         self.generate_calls = []
         self.chat_calls = []
+        self.install_checks = []
 
     def installed_models(self):
         return ({"name": "local:latest", "digest": "a" * 64, "size": 10},)
@@ -45,6 +47,7 @@ class _FakeClient:
         return {"model": model, "family": "fixture"}
 
     def require_installed(self, model: str):
+        self.install_checks.append(model)
         return {"name": model}
 
     def generate(self, model: str, prompt: str, **kwargs):
@@ -270,6 +273,84 @@ class ProductCliTests(unittest.TestCase):
             self.assertEqual(stderr, "")
             self.assertEqual(json.loads(stdout)["count"], 1)
 
+    def test_one_turn_chat_snapshots_explicit_image_without_storing_its_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            os.environ,
+            {
+                "HOME": str(Path(directory) / "home"),
+                "XDG_RUNTIME_DIR": str(Path(directory) / "run"),
+                "XDG_STATE_HOME": str(Path(directory) / "state"),
+                "XDG_DATA_HOME": str(Path(directory) / "data"),
+                "XDG_CACHE_HOME": str(Path(directory) / "cache"),
+            },
+        ):
+            source = Path(directory) / "PRIVATE-NAME.png"
+            payload = png_image(3, 2)
+            source.write_bytes(payload)
+            client = _FakeClient("description")
+            with mock.patch("kilix_ollama.cli.OllamaClient", return_value=client):
+                status, stdout, stderr = self.invoke(
+                    "chat",
+                    "local:latest",
+                    "--message",
+                    "describe",
+                    "--attach",
+                    str(source),
+                    "--json",
+                    "--development-runtime",
+                )
+            self.assertEqual(status, 0)
+            self.assertIn("conversation:", stderr)
+            identifier = json.loads(stdout)["conversation_id"]
+            wire = client.chat_calls[0][1][0]
+            self.assertEqual(len(wire["images"]), 1)
+            self.assertNotIn("attachments", wire)
+
+            status, stdout, stderr = self.invoke(
+                "conversations",
+                "show",
+                identifier,
+                "--json",
+            )
+            self.assertEqual(status, 0)
+            self.assertEqual(stderr, "")
+            stored = json.loads(stdout)
+            record = stored["messages"][0]["attachments"][0]
+            self.assertEqual(record["bytes"], len(payload))
+            self.assertEqual((record["width"], record["height"]), (3, 2))
+            self.assertNotIn(str(source), stdout)
+            self.assertNotIn("PRIVATE-NAME", stdout)
+            snapshot = (
+                Path(directory)
+                / "data/kilix-ollama/attachments"
+                / record["digest"].removeprefix("sha256:")
+            )
+            self.assertEqual(snapshot.read_bytes(), payload)
+            self.assertEqual(snapshot.stat().st_mode & 0o777, 0o600)
+
+            invalid = Path(directory) / "invalid.png"
+            invalid.write_bytes(b"not an image")
+            invalid_client = _FakeClient()
+            with mock.patch(
+                "kilix_ollama.cli.OllamaClient",
+                return_value=invalid_client,
+            ):
+                status, stdout, stderr = self.invoke(
+                    "chat",
+                    "local:latest",
+                    "--message",
+                    "describe",
+                    "--attach",
+                    str(invalid),
+                    "--json",
+                    "--development-runtime",
+                )
+            self.assertEqual(status, 2)
+            self.assertEqual(stdout, "")
+            self.assertIn("not a supported PNG or JPEG", stderr)
+            self.assertEqual(invalid_client.install_checks, [])
+            self.assertEqual(invalid_client.chat_calls, [])
+
     def test_thinking_is_private_in_json_until_explicitly_requested(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
             os.environ,
@@ -444,6 +525,15 @@ class ProductCliTests(unittest.TestCase):
             self.assertEqual(status, 2)
             self.assertEqual(stdout, "")
             self.assertIn("interactive chat requires a terminal", stderr)
+            status, stdout, stderr = self.invoke(
+                "chat",
+                "local:latest",
+                "--attach",
+                "image.png",
+            )
+            self.assertEqual(status, 2)
+            self.assertEqual(stdout, "")
+            self.assertIn("--attach requires --message", stderr)
 
     def test_pull_refuses_before_runtime_or_network_and_states_denominator(self) -> None:
         with mock.patch(
