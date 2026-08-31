@@ -134,6 +134,21 @@ def _marker_suffix(buffer: bytearray, marker: bytes) -> int:
     return 0
 
 
+def _bounded_decimal(value: str, *, maximum: int) -> int | None:
+    """Parse a short ASCII decimal without invoking unbounded integer conversion."""
+
+    if not 1 <= len(value) <= 10 or any(
+        character < "0" or character > "9" for character in value
+    ):
+        return None
+    parsed = 0
+    for character in value:
+        parsed = (parsed * 10) + (ord(character) - ord("0"))
+        if parsed > maximum:
+            return None
+    return parsed
+
+
 class TerminalInputParser:
     """Incrementally parse only the terminal controls the application uses."""
 
@@ -174,14 +189,77 @@ class TerminalInputParser:
             return TerminalEvent("unknown")
         if not fields or len(fields) > 3:
             return TerminalEvent("unknown")
-        primary = fields[0].split(":", 1)[0]
-        if not primary.isdigit():
+
+        key_fields = fields[0].split(":")
+        if not 1 <= len(key_fields) <= 3:
             return TerminalEvent("unknown")
-        codepoint = int(primary)
+        key_codes: list[int | None] = []
+        for index, value in enumerate(key_fields):
+            if not value:
+                if index == 1 and len(key_fields) == 3:
+                    key_codes.append(None)
+                    continue
+                return TerminalEvent("unknown")
+            code = _bounded_decimal(value, maximum=0x10FFFF)
+            if code is None or 0xD800 <= code <= 0xDFFF:
+                return TerminalEvent("unknown")
+            key_codes.append(code)
+
+        modifier = 1
+        event_type = 1
+        if len(fields) >= 2:
+            modifier_fields = fields[1].split(":")
+            if len(modifier_fields) > 2:
+                return TerminalEvent("unknown")
+            if modifier_fields[0]:
+                parsed_modifier = _bounded_decimal(
+                    modifier_fields[0],
+                    maximum=256,
+                )
+                if parsed_modifier is None or parsed_modifier < 1:
+                    return TerminalEvent("unknown")
+                modifier = parsed_modifier
+            elif len(modifier_fields) > 1:
+                return TerminalEvent("unknown")
+            if len(modifier_fields) == 2:
+                parsed_event_type = _bounded_decimal(
+                    modifier_fields[1],
+                    maximum=3,
+                )
+                if parsed_event_type not in (1, 2, 3):
+                    return TerminalEvent("unknown")
+                event_type = parsed_event_type
+
+        if len(fields) == 3:
+            text_fields = fields[2].split(":")
+            if not 1 <= len(text_fields) <= 32:
+                return TerminalEvent("unknown")
+            for value in text_fields:
+                text_code = _bounded_decimal(value, maximum=0x10FFFF)
+                if (
+                    text_code is None
+                    or text_code < 0x20
+                    or 0x7F <= text_code <= 0x9F
+                    or 0xD800 <= text_code <= 0xDFFF
+                ):
+                    return TerminalEvent("unknown")
+            # This application does not request associated-text reporting.
+            return TerminalEvent("unknown")
+
+        codepoint = key_codes[0]
+        assert codepoint is not None
+        actual_modifiers = modifier - 1
+        base_layout = key_codes[2] if len(key_codes) == 3 else None
+        if (
+            actual_modifiers & 0b100
+            and event_type in (1, 2)
+            and (codepoint == ord("c") or base_layout == ord("c"))
+        ):
+            return TerminalEvent("interrupt")
+        if actual_modifiers or event_type != 1:
+            return TerminalEvent("unknown")
         if codepoint in _KITTY_SPECIAL:
             return TerminalEvent("key", _KITTY_SPECIAL[codepoint])
-        if codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
-            return TerminalEvent("unknown")
         character = chr(codepoint)
         if sanitize_text(character) != character:
             return TerminalEvent("unknown")
@@ -367,8 +445,8 @@ def reduce_event(
         if state.help_visible:
             return replace(state, help_visible=False), None
         return replace(state, view=0), None
-    if key.isdigit() and key != "0":
-        selected = int(key) - 1
+    if key in "123456789":
+        selected = ord(key) - ord("1")
         if selected < len(VIEWS):
             return replace(state, view=selected, help_visible=False), None
     return state, None

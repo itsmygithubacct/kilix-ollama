@@ -84,6 +84,20 @@ class TerminalInputParserTests(unittest.TestCase):
             with self.subTest(sequence=sequence):
                 self.assertEqual(fragmented(sequence), (expected,))
 
+    def test_kitty_ctrl_c_and_numeric_parameters_fail_closed(self) -> None:
+        cases = (
+            (b"\x1b[99;5u", TerminalEvent("interrupt")),
+            (b"\x1b[99;6u", TerminalEvent("interrupt")),
+            (b"\x1b[1089::99;5u", TerminalEvent("interrupt")),
+            (b"\x1b[113;3u", TerminalEvent("unknown")),
+            (b"\x1b[113;1:3u", TerminalEvent("unknown")),
+            (b"\x1b[" + (b"9" * 5_000) + b"u", TerminalEvent("unknown")),
+            (b"\x1b[99;" + (b"9" * 5_000) + b"u", TerminalEvent("unknown")),
+        )
+        for sequence, expected in cases:
+            with self.subTest(size=len(sequence), expected=expected):
+                self.assertEqual(fragmented(sequence), (expected,))
+
     def test_bracketed_paste_is_one_inert_sanitized_event(self) -> None:
         sequence = b"\x1b[200~q\x1b[31mprivate\x1b[201~"
         events = fragmented(sequence)
@@ -154,6 +168,18 @@ class TuiStateAndRenderTests(unittest.TestCase):
             model_count=3,
         )
         self.assertEqual(exit_status, 130)
+
+    def test_non_ascii_digit_keys_are_inert(self) -> None:
+        initial = TuiState()
+        for key in ("²", "١", "１"):
+            with self.subTest(key=key):
+                state, exit_status = reduce_event(
+                    initial,
+                    TerminalEvent("key", key),
+                    model_count=3,
+                )
+                self.assertEqual(state, initial)
+                self.assertIsNone(exit_status)
 
     def test_every_view_renders_at_narrow_and_wide_bounds(self) -> None:
         for view in range(len(VIEWS)):
@@ -312,6 +338,12 @@ class TuiSubprocessTests(unittest.TestCase):
                 os.write(master, b"q")
             elif action == "interrupt-byte":
                 os.write(master, b"\x03")
+            elif action == "interrupt-kitty":
+                os.write(master, b"\x1b[99;5u")
+            elif action == "unicode-digit":
+                os.write(master, "²".encode("utf-8") + b"q")
+            elif action == "oversized-kitty":
+                os.write(master, b"\x1b[" + (b"9" * 5_000) + b"uq")
             elif action == "terminate-signal":
                 process.send_signal(signal.SIGTERM)
             else:
@@ -331,6 +363,9 @@ class TuiSubprocessTests(unittest.TestCase):
         cases = (
             ("quit", 0),
             ("interrupt-byte", 130),
+            ("interrupt-kitty", 130),
+            ("unicode-digit", 0),
+            ("oversized-kitty", 0),
             ("terminate-signal", 128 + signal.SIGTERM),
         )
         for action, expected_status in cases:
