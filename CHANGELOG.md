@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add the terminal-native product surface: exact artifact-free model library,
+  local model inspection, one-off prompting, persistent chat, conversation
+  listing/show/delete/export, and an explicit fail-closed pull seam.
+- Add bounded strict NDJSON streaming, cross-delta terminal sanitization,
+  private atomic conversation persistence, prompt/file/output safety, and
+  exact-runtime client admission through the same-UID mediation socket.
+- Add four disabled-by-default read-only tools with bounded schemas, explicit
+  filesystem selections, per-call approval, and no shell, subprocess, network,
+  or write capability.
 - Add a qualification-gated NVK/TU106 Qwen 3.5 runtime tuning profile.
 - Fix service candidates at one 4096-token model and explicitly enable Vulkan
   only for a qualified Vulkan backend.

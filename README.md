@@ -5,11 +5,12 @@ Ollama runtime managed by Plebian OS. This tree is an unpublished development
 spine for the 0.2.1 line. Its CLI diagnostics perform read-only discovery and
 emit provisional contracts. Its library now includes the candidate runtime
 supervisor, live private mediation proxy, shared accelerator arbiter, and
-one-shot and persistent Vulkan TTS runners. The public CLI still does not start
-the daemon or expose inference; application orchestration remains a later
-integration boundary. A separate explicit optional-TTS command can download
-hash-pinned inputs from their immutable upstream revision and convert them
-locally.
+one-shot and persistent Vulkan TTS runners. The CLI now provides an exact
+artifact-free model catalog, one-off prompts, persistent chats, conversation
+management, and a disabled-by-default read-only tool loop through that private
+mediation boundary. It does not start the daemon. A separate explicit
+optional-TTS command can download hash-pinned inputs from their immutable
+upstream revision and convert them locally.
 
 The implementation establishes these boundaries:
 
@@ -20,6 +21,12 @@ The implementation establishes these boundaries:
   for the private Unix-listener candidate;
 - a bounded live Unix-socket proxy that applies policy before forwarding and
   never falls back to a cloud endpoint;
+- strict bounded NDJSON assembly and stateful terminal-control stripping across
+  arbitrary streaming boundaries;
+- owner-private, schema-checked, atomic conversation persistence and sanitized
+  Markdown export;
+- four bounded read-only tools that require both session opt-in and per-call
+  approval, with no shell, subprocess, network, or write tool;
 - one shared, bounded accelerator arbiter that finishes an admitted LLM turn
   before prioritizing queued speech at utterance boundaries;
 - exact-artifact one-shot and persistent Vulkan speech runners with bounded
@@ -62,6 +69,51 @@ not accepted public schemas. The current Ollama
 `0.32.14+plebian.security-license-r3` reference is likewise only a source
 candidate; it is reported as unqualified even when its metadata
 parses successfully.
+
+## Local product commands
+
+Browse the exact three-entry metadata catalog without contacting a runtime, or
+merge installed state from the private mediation socket:
+
+```sh
+./kilix-ollama library
+./kilix-ollama library --installed
+./kilix-ollama models
+./kilix-ollama ps
+./kilix-ollama show granite4.1:3b --development-runtime
+```
+
+Run one prompt from arguments, standard input, or one non-symlinked UTF-8 file.
+Plain output is sanitized while streaming; JSON, JSON Lines, and atomic file
+output are also available:
+
+```sh
+./kilix-ollama ask granite4.1:3b --development-runtime 'Explain this tree.'
+./kilix-ollama ask granite4.1:3b --development-runtime --file prompt.txt --json
+./kilix-ollama ask granite4.1:3b --development-runtime --output answer.md 'Summarize.'
+```
+
+Start a persistent terminal chat, run a single scripted turn, or manage the
+owner-private conversation store:
+
+```sh
+./kilix-ollama chat granite4.1:3b --development-runtime
+./kilix-ollama chat granite4.1:3b --development-runtime --message 'Hello' --json
+./kilix-ollama conversations list
+./kilix-ollama conversations export CONVERSATION_ID --output transcript.md
+```
+
+`--tools` offers exactly four read-only tools: UTC time, bounded arithmetic,
+reading an explicitly selected text file, and bounded search beneath an
+explicitly selected directory. Every call still requires interactive approval.
+Tools are absent from the request by default. `tools --json` prints the exact
+registry without enabling it.
+
+No prompt command performs an implicit pull. `pull` currently fails before
+runtime or network access because the shared F100 carrier/receipt authority is
+0 of 1 available. `--development-runtime` admits only the exact local R3
+candidate; it never admits an unknown runtime, cloud endpoint, or cloud-tagged
+model.
 
 Service descriptions use only the fixed root-owned launcher
 `/usr/lib/plebian-os/ollama/ollama-current`. Diagnostics reject a symlink,
@@ -183,17 +235,18 @@ accepted schema, broad hardware qualification, or CUDA-parity evidence.
 
 ## Current limits
 
-There is no accepted conversation schema, public daemon entry point, avatar
-UI, emotional-state or lip-motion integration, or release-admitted product
-voice. The supervisor, live mediation server, shared arbiter, and synthesis
-runners are implemented as unfrozen library candidates with deterministic and
-local integration coverage. Native Pocket output currently fails the local
-application-quality gate and remains research-only. Model and weight artifacts
-remain deliberately absent from the repository. The optional TTS catalog and
-installer are a local conversion contract, not model or runtime admission.
-Python and the standard library remain a provisional control-plane choice;
-downloads reuse Kilix Content, and conversion plus native inference require
-separately packaged, pinned closures.
+The conversation schema is implemented but remains v0 and unaccepted. There is
+no public daemon entry point, full-screen terminal UI, avatar UI,
+emotional-state or lip-motion integration, shared-authority model transfer, or
+release-admitted product voice. The terminal product, supervisor, live
+mediation server, shared arbiter, and synthesis runners are unfrozen candidates
+with deterministic local coverage. Native Pocket output currently fails the
+local application-quality gate and remains research-only. Model and weight
+artifacts remain deliberately absent from the repository. The optional TTS
+catalog and installer are a local conversion contract, not model or runtime
+admission. Python and the standard library remain a provisional control-plane
+choice; downloads reuse Kilix Content, and conversion plus native inference
+require separately packaged, pinned closures.
 
 ## License
 

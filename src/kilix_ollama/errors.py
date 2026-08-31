@@ -25,6 +25,18 @@ class UpstreamProtocolError(KilixOllamaError):
     """The upstream service returned malformed or incompatible data."""
 
 
+class RuntimeUnavailable(KilixOllamaError):
+    """The private mediated runtime is absent or not eligible for an action."""
+
+
+class ConversationError(KilixOllamaError):
+    """Private conversation state is missing, malformed, or unsafe."""
+
+
+class ToolError(KilixOllamaError):
+    """A bounded tool request was invalid, denied, or failed safely."""
+
+
 class AcceleratorQueueFull(KilixOllamaError):
     """The bounded shared-accelerator queue has no admission slot."""
 
@@ -59,12 +71,15 @@ __all__ = [
     "AcceleratorRequestTimeout",
     "AcceleratorUnavailable",
     "BackendUnavailable",
+    "ConversationError",
     "InstallError",
     "KilixOllamaError",
     "PolicyDenied",
     "RuntimeContractError",
+    "RuntimeUnavailable",
     "SupervisorError",
     "SynthesisCancelled",
     "SynthesisError",
+    "ToolError",
     "UpstreamProtocolError",
 ]
