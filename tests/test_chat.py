@@ -8,8 +8,8 @@ import tempfile
 import unittest
 
 from kilix_ollama.chat import ChatEngine, conversation_title
-from kilix_ollama.conversations import ConversationStore
-from kilix_ollama.errors import RuntimeUnavailable, ToolError
+from kilix_ollama.conversations import ConversationStore, MAX_MESSAGE_BYTES
+from kilix_ollama.errors import ConversationError, RuntimeUnavailable, ToolError
 from kilix_ollama.paths import RuntimePaths
 from kilix_ollama.streaming import StreamDelta, StreamResult
 from kilix_ollama.tools import ToolRegistry
@@ -90,6 +90,7 @@ class ChatEngineTests(unittest.TestCase):
         turn = engine.turn(conversation.identifier, "question", on_delta=deltas.append)
         self.assertEqual(turn.result.content, "answer")
         self.assertEqual(turn.tool_rounds, 0)
+        self.assertEqual(turn.operation, "turn")
         self.assertEqual(client.install_checks, ["local:latest"])
         self.assertEqual([delta.content for delta in deltas], ["answer"])
         stored = self.store.load(conversation.identifier)
@@ -170,7 +171,7 @@ class ChatEngineTests(unittest.TestCase):
         conversation = engine.create(model="local:latest", title="Disabled")
         with self.assertRaises(ToolError):
             engine.turn(conversation.identifier, "call", registry=None)
-        self.assertEqual(len(self.store.load(conversation.identifier).messages), 2)
+        self.assertEqual(len(self.store.load(conversation.identifier).messages), 0)
 
         unknown = {
             "type": "function",
@@ -187,6 +188,7 @@ class ChatEngineTests(unittest.TestCase):
                 approve=lambda _preview: True,
             )
         self.assertEqual(len(client.chat_calls), 1)
+        self.assertEqual(len(self.store.load(conversation.identifier).messages), 0)
 
     def test_tool_loop_stops_after_exact_round_budget(self) -> None:
         tool_call = {
@@ -204,6 +206,87 @@ class ChatEngineTests(unittest.TestCase):
                 approve=lambda _preview: False,
             )
         self.assertEqual(len(client.chat_calls), 5)
+        self.assertEqual(len(self.store.load(conversation.identifier).messages), 0)
+
+    def test_cancelled_and_concurrently_superseded_turns_do_not_partially_commit(self) -> None:
+        client = _FakeClient([])
+        engine = ChatEngine(client, self.store)  # type: ignore[arg-type]
+        conversation = engine.create(model="local:latest", title="Atomic")
+
+        def interrupted(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        client.chat = interrupted  # type: ignore[method-assign]
+        with self.assertRaises(KeyboardInterrupt):
+            engine.turn(conversation.identifier, "cancel me")
+        self.assertEqual(self.store.load(conversation.identifier).messages, ())
+
+        client = _FakeClient([result("generated")])
+        engine = ChatEngine(client, self.store)  # type: ignore[arg-type]
+
+        def concurrent_update(_delta: StreamDelta) -> None:
+            self.store.append(
+                conversation.identifier,
+                ({"role": "system", "content": "newer state"},),
+            )
+
+        with self.assertRaises(ConversationError):
+            engine.turn(
+                conversation.identifier,
+                "race",
+                on_delta=concurrent_update,
+            )
+        self.assertEqual(
+            self.store.load(conversation.identifier).messages,
+            ({"role": "system", "content": "newer state"},),
+        )
+
+    def test_regenerate_replaces_only_the_last_completed_response_atomically(self) -> None:
+        client = _FakeClient([result("replacement", thinking="new private")])
+        engine = ChatEngine(client, self.store)  # type: ignore[arg-type]
+        conversation = engine.create(model="local:latest", title="Regenerate")
+        conversation = self.store.append(
+            conversation.identifier,
+            (
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "first answer"},
+                {"role": "user", "content": "last"},
+                {"role": "assistant", "content": "old answer", "thinking": "old"},
+            ),
+        )
+        turn = engine.regenerate(conversation.identifier)
+        self.assertEqual(turn.operation, "regenerate")
+        self.assertEqual(
+            [message["content"] for message in turn.conversation.messages],
+            ["first", "first answer", "last", "replacement"],
+        )
+        self.assertEqual(turn.conversation.messages[-1]["thinking"], "new private")
+        self.assertEqual(
+            [message["content"] for message in client.chat_calls[0][1]],
+            ["first", "first answer", "last"],
+        )
+
+        incomplete = engine.create(model="local:latest", title="Incomplete")
+        self.store.append(
+            incomplete.identifier,
+            ({"role": "user", "content": "no answer"},),
+        )
+        with self.assertRaises(ConversationError):
+            engine.regenerate(incomplete.identifier)
+
+    def test_model_switch_requires_installed_target_before_atomic_mutation(self) -> None:
+        client = _FakeClient([])
+        engine = ChatEngine(client, self.store)  # type: ignore[arg-type]
+        conversation = engine.create(model="local:latest", title="Switch")
+        switched = engine.switch_model(conversation.identifier, "other:latest")
+        self.assertEqual(switched.model, "other:latest")
+        self.assertEqual(client.install_checks, ["other:latest"])
+
+        missing_client = _FakeClient([], installed=False)
+        missing_engine = ChatEngine(missing_client, self.store)  # type: ignore[arg-type]
+        with self.assertRaises(RuntimeUnavailable):
+            missing_engine.switch_model(conversation.identifier, "missing:latest")
+        self.assertEqual(self.store.load(conversation.identifier).model, "other:latest")
 
     def test_missing_model_fails_before_conversation_mutation(self) -> None:
         client = _FakeClient([], installed=False)
@@ -213,6 +296,16 @@ class ChatEngineTests(unittest.TestCase):
             engine.turn(conversation.identifier, "question")
         self.assertEqual(self.store.load(conversation.identifier).messages, ())
         self.assertEqual(client.chat_calls, [])
+
+        installed_client = _FakeClient([])
+        installed_engine = ChatEngine(installed_client, self.store)  # type: ignore[arg-type]
+        with self.assertRaises(ConversationError):
+            installed_engine.turn(
+                conversation.identifier,
+                "x" * (MAX_MESSAGE_BYTES + 1),
+            )
+        self.assertEqual(installed_client.install_checks, [])
+        self.assertEqual(self.store.load(conversation.identifier).messages, ())
 
     def test_conversation_title_is_safe_bounded_and_first_line_only(self) -> None:
         self.assertEqual(conversation_title("hello\nsecond"), "hello")

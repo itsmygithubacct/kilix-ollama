@@ -115,9 +115,20 @@ owner-private conversation store:
 ```sh
 ./kilix-ollama chat granite4.1:3b --development-runtime
 ./kilix-ollama chat granite4.1:3b --development-runtime --message 'Hello' --json
+./kilix-ollama chat --conversation CONVERSATION_ID --regenerate --json --development-runtime
+./kilix-ollama chat --conversation CONVERSATION_ID --switch-model granite3.2-vision:2b --message 'Continue' --json --development-runtime
 ./kilix-ollama conversations list
+./kilix-ollama conversations fork CONVERSATION_ID --messages 2 --title 'Alternative'
 ./kilix-ollama conversations export CONVERSATION_ID --output transcript.md
 ```
+
+Completed turns commit as one compare-and-swap update. Generation cancelled
+before commit, malformed tool output, an exhausted tool budget, or a concurrent
+conversation update leaves the previously stored conversation intact.
+Regeneration replaces only the suffix after the last user message. Forking
+refuses a prefix that splits a tool exchange, and model switching verifies the
+target is installed before it changes stored state. Interactive chat also
+accepts `/regenerate`, `/fork`, and `/model MODEL`.
 
 `--tools` offers exactly four read-only tools: UTC time, bounded arithmetic,
 reading an explicitly selected text file, and bounded search beneath an
@@ -251,7 +262,8 @@ accepted schema, broad hardware qualification, or CUDA-parity evidence.
 
 ## Current limits
 
-The conversation schema is implemented but remains v0 and unaccepted. There is
+The conversation schema is implemented but remains v0 and unaccepted. Chat
+attachments are not implemented yet. There is
 no public daemon entry point, release-admitted full-screen terminal UI, avatar UI,
 emotional-state or lip-motion integration, shared-authority model transfer, or
 release-admitted product voice. The terminal product, supervisor, live

@@ -276,6 +276,13 @@ class ConversationStore:
     def _prepare(self) -> None:
         _ensure_private_directory(self.root, uid=self.uid)
 
+    def _allocate_identifier_unlocked(self) -> str:
+        for _attempt in range(32):
+            identifier = _identifier(self._identifier_factory())
+            if not os.path.lexists(self._path(identifier)):
+                return identifier
+        raise ConversationError("conversation id allocation exhausted")
+
     @contextmanager
     def _locked(self) -> Iterator[None]:
         self._prepare()
@@ -375,7 +382,10 @@ class ConversationStore:
                     raise ConversationError("conversation disappeared during update")
                 if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                     raise ConversationError("conversation target was substituted")
-            os.replace(temporary, target)
+                os.replace(temporary, target)
+            else:
+                os.link(temporary, target, follow_symlinks=False)
+                temporary.unlink()
             directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
             try:
                 os.fsync(directory)
@@ -404,12 +414,7 @@ class ConversationStore:
         if len(checked_messages) > MAX_MESSAGES:
             raise ConversationError("conversation message count exceeds its limit")
         with self._locked():
-            for _attempt in range(32):
-                identifier = _identifier(self._identifier_factory())
-                if not os.path.lexists(self._path(identifier)):
-                    break
-            else:
-                raise ConversationError("conversation id allocation exhausted")
+            identifier = self._allocate_identifier_unlocked()
             now = self._now()
             conversation = Conversation(
                 identifier,
@@ -447,6 +452,102 @@ class ConversationStore:
             Conversation.from_record(updated.storage_record())
             self._write_unlocked(updated, replace=True)
             return updated
+
+    def replace_messages(
+        self,
+        expected: Conversation,
+        messages: Iterable[Mapping[str, object]],
+    ) -> Conversation:
+        if not isinstance(expected, Conversation):
+            raise ConversationError("expected conversation state is invalid")
+        Conversation.from_record(expected.storage_record())
+        replacements = tuple(validate_message(message) for message in messages)
+        if len(replacements) > MAX_MESSAGES:
+            raise ConversationError("conversation message count exceeds its limit")
+        with self._locked():
+            current = self._read_unlocked(expected.identifier)
+            if current != expected:
+                raise ConversationError("conversation changed during the operation")
+            updated = Conversation(
+                current.identifier,
+                current.title,
+                current.model,
+                current.created_at,
+                self._now(),
+                replacements,
+            )
+            Conversation.from_record(updated.storage_record())
+            self._write_unlocked(updated, replace=True)
+            return updated
+
+    def replace_model(self, expected: Conversation, model: str) -> Conversation:
+        if not isinstance(expected, Conversation):
+            raise ConversationError("expected conversation state is invalid")
+        Conversation.from_record(expected.storage_record())
+        checked_model = _bounded_text(model, "model", maximum=1024)
+        if not checked_model:
+            raise ConversationError("conversation model is empty")
+        with self._locked():
+            current = self._read_unlocked(expected.identifier)
+            if current != expected:
+                raise ConversationError("conversation changed during the operation")
+            if current.model == checked_model:
+                return current
+            updated = Conversation(
+                current.identifier,
+                current.title,
+                checked_model,
+                current.created_at,
+                self._now(),
+                current.messages,
+            )
+            Conversation.from_record(updated.storage_record())
+            self._write_unlocked(updated, replace=True)
+            return updated
+
+    def fork(
+        self,
+        identifier: str,
+        *,
+        message_count: int | None = None,
+        title: str | None = None,
+    ) -> Conversation:
+        if message_count is not None and (
+            not isinstance(message_count, int) or isinstance(message_count, bool)
+        ):
+            raise ConversationError("fork message count is invalid")
+        with self._locked():
+            source = self._read_unlocked(identifier)
+            count = len(source.messages) if message_count is None else message_count
+            if not 0 <= count <= len(source.messages):
+                raise ConversationError("fork message count is outside the conversation")
+            messages = source.messages[:count]
+            if messages and (
+                messages[-1]["role"] == "tool" or messages[-1].get("tool_calls")
+            ):
+                raise ConversationError("fork point splits a tool exchange")
+            checked_title = source.title
+            if title is not None:
+                checked_title = _bounded_text(
+                    title.strip(),
+                    "title",
+                    maximum=MAX_TITLE_BYTES,
+                )
+                if not checked_title:
+                    raise ConversationError("conversation title must not be empty")
+            new_identifier = self._allocate_identifier_unlocked()
+            now = self._now()
+            forked = Conversation(
+                new_identifier,
+                checked_title,
+                source.model,
+                now,
+                now,
+                messages,
+            )
+            Conversation.from_record(forked.storage_record())
+            self._write_unlocked(forked, replace=False)
+            return forked
 
     def list(self) -> tuple[dict[str, object], ...]:
         if not os.path.lexists(self.root):

@@ -123,8 +123,19 @@ def _parser() -> argparse.ArgumentParser:
     chat.add_argument("model", nargs="?")
     chat.add_argument("--conversation")
     chat.add_argument("--title")
-    chat.add_argument("--message", help="run one turn and exit")
-    chat.add_argument("--json", action="store_true", help="requires --message")
+    chat_turn = chat.add_mutually_exclusive_group()
+    chat_turn.add_argument("--message", help="run one turn and exit")
+    chat_turn.add_argument(
+        "--regenerate",
+        action="store_true",
+        help="replace the last completed response atomically and exit",
+    )
+    chat.add_argument(
+        "--switch-model",
+        metavar="MODEL",
+        help="switch an existing conversation after verifying the model is installed",
+    )
+    chat.add_argument("--json", action="store_true", help="requires --message or --regenerate")
     chat.add_argument("--tools", action="store_true", help="offer the bounded read-only registry")
     chat.add_argument(
         "--tool-root",
@@ -152,6 +163,14 @@ def _parser() -> argparse.ArgumentParser:
     conversation_export.add_argument("--output", type=Path, required=True)
     conversation_export.add_argument("--overwrite", action="store_true")
     conversation_export.add_argument("--thinking", action="store_true")
+    conversation_fork = conversation_commands.add_parser(
+        "fork",
+        help="copy a complete bounded prefix into a new private conversation",
+    )
+    conversation_fork.add_argument("identifier")
+    conversation_fork.add_argument("--messages", type=int, dest="message_count")
+    conversation_fork.add_argument("--title")
+    conversation_fork.add_argument("--json", action="store_true")
 
     pull = commands.add_parser("pull", help="request an exact model install through shared authority")
     pull.add_argument("model")
@@ -351,10 +370,22 @@ def _approval(preview: ToolPreview) -> bool:
 
 
 def _chat(args: argparse.Namespace) -> int:
-    if args.json and args.message is None:
-        raise RuntimeContractError("--json requires --message")
+    if args.json and args.message is None and not args.regenerate:
+        raise RuntimeContractError("--json requires --message or --regenerate")
     if args.tool_root and not args.tools:
         raise RuntimeContractError("--tool-root requires --tools")
+    if args.title is not None and args.conversation is not None:
+        raise RuntimeContractError("--title is only valid for a new conversation")
+    if args.switch_model is not None and args.conversation is None:
+        raise RuntimeContractError("--switch-model requires --conversation")
+    if args.switch_model is not None and args.model is not None:
+        raise RuntimeContractError("--switch-model cannot be combined with the positional model")
+    if args.switch_model is not None and args.regenerate:
+        raise RuntimeContractError("switch the model before requesting regeneration")
+    if args.regenerate and args.conversation is None:
+        raise RuntimeContractError("--regenerate requires --conversation")
+    if args.message is None and not args.regenerate and not sys.stdin.isatty():
+        raise RuntimeContractError("interactive chat requires a terminal; use --message")
     paths = RuntimePaths.from_environment()
     client = OllamaClient(paths, allow_unqualified_candidate=args.development_runtime)
     store = ConversationStore(paths)
@@ -363,6 +394,11 @@ def _chat(args: argparse.Namespace) -> int:
         conversation = store.load(args.conversation)
         if args.model is not None and args.model != conversation.model:
             raise RuntimeContractError("model argument disagrees with the stored conversation")
+        if args.switch_model is not None:
+            conversation = engine.switch_model(
+                conversation.identifier,
+                args.switch_model,
+            )
     else:
         if args.model is None:
             raise RuntimeContractError("a model is required for a new conversation")
@@ -372,7 +408,12 @@ def _chat(args: argparse.Namespace) -> int:
     registry = ToolRegistry(args.tool_root) if args.tools else None
     print(f"conversation: {conversation.identifier}", file=sys.stderr)
 
-    def run(prompt: str, *, machine: bool) -> None:
+    def run(
+        prompt: str | None,
+        *,
+        machine: bool,
+        regenerate: bool = False,
+    ) -> None:
         sanitizer = TerminalSanitizer()
 
         def emit(delta: StreamDelta) -> None:
@@ -382,16 +423,19 @@ def _chat(args: argparse.Namespace) -> int:
                     sys.stdout.write(safe)
                     sys.stdout.flush()
 
-        turn = engine.turn(
-            conversation.identifier,
-            prompt,
-            registry=registry,
-            approve=_approval if registry is not None else None,
-            on_delta=None if machine else emit,
-            temperature=args.temperature,
-            seed=args.seed,
-            context=args.context,
-        )
+        turn_options = {
+            "registry": registry,
+            "approve": _approval if registry is not None else None,
+            "on_delta": None if machine else emit,
+            "temperature": args.temperature,
+            "seed": args.seed,
+            "context": args.context,
+        }
+        if regenerate:
+            turn = engine.regenerate(conversation.identifier, **turn_options)
+        else:
+            assert prompt is not None
+            turn = engine.turn(conversation.identifier, prompt, **turn_options)
         sanitizer.finish()
         if machine:
             print(_json(turn.record()))
@@ -401,8 +445,9 @@ def _chat(args: argparse.Namespace) -> int:
     if args.message is not None:
         run(args.message, machine=args.json)
         return 0
-    if not sys.stdin.isatty():
-        raise RuntimeContractError("interactive chat requires a terminal; use --message")
+    if args.regenerate:
+        run(None, machine=args.json, regenerate=True)
+        return 0
     while True:
         try:
             prompt = input("you> ")
@@ -413,6 +458,18 @@ def _chat(args: argparse.Namespace) -> int:
             continue
         if prompt.strip() in ("/exit", "/quit"):
             return 0
+        if prompt.strip() == "/regenerate":
+            run(None, machine=False, regenerate=True)
+            continue
+        if prompt.strip() == "/fork":
+            conversation = engine.fork(conversation.identifier)
+            print(f"conversation: {conversation.identifier}", file=sys.stderr)
+            continue
+        if prompt.strip().startswith("/model "):
+            model = prompt.strip().removeprefix("/model ").strip()
+            conversation = engine.switch_model(conversation.identifier, model)
+            print(f"model: {conversation.model}", file=sys.stderr)
+            continue
         run(prompt, machine=False)
 
 
@@ -445,6 +502,26 @@ def _conversations(args: argparse.Namespace) -> int:
             print(_json(conversation.record(include_thinking=args.thinking)))
         else:
             print(store.export_markdown(args.identifier, include_thinking=args.thinking), end="")
+        return 0
+    if args.conversation_command == "fork":
+        forked = store.fork(
+            args.identifier,
+            message_count=args.message_count,
+            title=args.title,
+        )
+        if args.json:
+            print(
+                _json(
+                    {
+                        "schema": "kilix.ollama.conversation-fork/v0-unfrozen",
+                        "schema_status": "development-unfrozen",
+                        "source_id": args.identifier,
+                        "conversation": forked.record(),
+                    }
+                )
+            )
+        else:
+            print(f"forked conversation {forked.identifier} from {args.identifier}")
         return 0
     if args.conversation_command == "delete":
         if not args.confirm:

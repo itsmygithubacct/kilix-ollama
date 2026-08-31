@@ -7,6 +7,7 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
+from unittest import mock
 
 from kilix_ollama.conversations import (
     ConversationStore,
@@ -37,7 +38,7 @@ class ConversationStoreTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.paths = private_paths(self.root)
         self.now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
-        identifiers = iter(("1" * 32, "2" * 32, "3" * 32))
+        identifiers = iter(tuple(str(index) * 32 for index in range(1, 9)))
         self.store = ConversationStore(
             self.paths,
             clock=lambda: self.now,
@@ -94,6 +95,70 @@ class ConversationStoreTests(unittest.TestCase):
             [record["id"] for record in self.store.list()],
             [first.identifier, second.identifier],
         )
+
+    def test_compare_and_swap_replacement_refuses_stale_conversation_state(self) -> None:
+        original = self.store.create(model="one:latest", title="Atomic")
+        replaced = self.store.replace_messages(
+            original,
+            (
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "answer"},
+            ),
+        )
+        self.assertEqual(len(replaced.messages), 2)
+        with self.assertRaises(ConversationError):
+            self.store.replace_model(original, "two:latest")
+        switched = self.store.replace_model(replaced, "two:latest")
+        self.assertEqual(switched.model, "two:latest")
+        self.assertEqual(switched.messages, replaced.messages)
+        self.assertEqual(stat.S_IMODE(self.store._path(switched.identifier).stat().st_mode), 0o600)
+
+    def test_fork_copies_only_complete_bounded_prefixes_into_new_private_files(self) -> None:
+        source = self.store.create(model="local:latest", title="Source")
+        source = self.store.append(
+            source.identifier,
+            (
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "answer"},
+            ),
+        )
+        forked = self.store.fork(
+            source.identifier,
+            message_count=1,
+            title="Fork",
+        )
+        self.assertNotEqual(forked.identifier, source.identifier)
+        self.assertEqual(forked.title, "Fork")
+        self.assertEqual(forked.model, source.model)
+        self.assertEqual(forked.messages, source.messages[:1])
+        self.assertEqual(stat.S_IMODE(self.store._path(forked.identifier).stat().st_mode), 0o600)
+        self.assertEqual(self.store.load(source.identifier), source)
+
+        for count in (-1, len(source.messages) + 1, True):
+            with self.subTest(count=count), self.assertRaises(ConversationError):
+                self.store.fork(source.identifier, message_count=count)  # type: ignore[arg-type]
+        with self.assertRaises(ConversationError):
+            self.store.fork(source.identifier, title="  ")
+
+        tool_source = self.store.create(model="local:latest", title="Tools")
+        tool_source = self.store.append(
+            tool_source.identifier,
+            (
+                {"role": "user", "content": "use a tool"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"function": {"name": "tool", "arguments": {}}}],
+                },
+                {"role": "tool", "content": "ok", "tool_name": "tool"},
+                {"role": "assistant", "content": "done"},
+            ),
+        )
+        for count in (2, 3):
+            with self.subTest(tool_count=count), self.assertRaises(ConversationError):
+                self.store.fork(tool_source.identifier, message_count=count)
+        complete = self.store.fork(tool_source.identifier)
+        self.assertEqual(complete.messages, tool_source.messages)
 
     def test_markdown_export_strips_terminal_controls_and_hides_thinking_by_default(self) -> None:
         conversation = self.store.create(model="local", title="Unsafe\x1b]0;title\x07Safe")
@@ -153,6 +218,26 @@ class ConversationStoreTests(unittest.TestCase):
         path.symlink_to(target)
         with self.assertRaises(ConversationError):
             self.store.load(conversation.identifier)
+
+    def test_target_appearing_during_create_is_never_replaced(self) -> None:
+        target = self.store.root / f"{'1' * 32}.json"
+        real_link = os.link
+
+        def inject_target(source, destination, *, follow_symlinks=True):
+            Path(destination).write_bytes(b"concurrent owner data")
+            return real_link(
+                source,
+                destination,
+                follow_symlinks=follow_symlinks,
+            )
+
+        with mock.patch(
+            "kilix_ollama.conversations.os.link",
+            side_effect=inject_target,
+        ), self.assertRaises(ConversationError):
+            self.store.create(model="local:latest", title="Race")
+        self.assertEqual(target.read_bytes(), b"concurrent owner data")
+        self.assertEqual(tuple(self.store.root.glob("*.tmp")), ())
 
     def test_embedded_id_and_schema_tampering_are_refused(self) -> None:
         conversation = self.store.create(model="local", title="Safe")

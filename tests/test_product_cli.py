@@ -314,6 +314,137 @@ class ProductCliTests(unittest.TestCase):
                 json.loads(stdout)["messages"][1]["thinking"], "PRIVATE_CHAIN"
             )
 
+    def test_chat_regenerate_switch_fork_and_cancel_are_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            os.environ,
+            {
+                "HOME": str(Path(directory) / "home"),
+                "XDG_RUNTIME_DIR": str(Path(directory) / "run"),
+                "XDG_STATE_HOME": str(Path(directory) / "state"),
+                "XDG_DATA_HOME": str(Path(directory) / "data"),
+                "XDG_CACHE_HOME": str(Path(directory) / "cache"),
+            },
+        ):
+            client = _FakeClient("old answer")
+            with mock.patch("kilix_ollama.cli.OllamaClient", return_value=client):
+                status, stdout, _stderr = self.invoke(
+                    "chat",
+                    "local:latest",
+                    "--message",
+                    "question",
+                    "--json",
+                    "--development-runtime",
+                )
+            self.assertEqual(status, 0)
+            identifier = json.loads(stdout)["conversation_id"]
+
+            status, stdout, stderr = self.invoke(
+                "conversations",
+                "fork",
+                identifier,
+                "--messages",
+                "1",
+                "--title",
+                "Branch",
+                "--json",
+            )
+            self.assertEqual(status, 0)
+            self.assertEqual(stderr, "")
+            fork_record = json.loads(stdout)
+            self.assertEqual(fork_record["source_id"], identifier)
+            self.assertEqual(fork_record["conversation"]["title"], "Branch")
+            self.assertEqual(len(fork_record["conversation"]["messages"]), 1)
+
+            regenerated = _FakeClient("replacement")
+            with mock.patch(
+                "kilix_ollama.cli.OllamaClient",
+                return_value=regenerated,
+            ):
+                status, stdout, _stderr = self.invoke(
+                    "chat",
+                    "--conversation",
+                    identifier,
+                    "--regenerate",
+                    "--json",
+                    "--development-runtime",
+                )
+            self.assertEqual(status, 0)
+            turn = json.loads(stdout)
+            self.assertEqual(turn["operation"], "regenerate")
+            self.assertEqual(turn["message_count"], 2)
+            self.assertEqual(regenerated.chat_calls[0][1][-1]["content"], "question")
+
+            switched = _FakeClient("next answer")
+            with mock.patch("kilix_ollama.cli.OllamaClient", return_value=switched):
+                status, stdout, _stderr = self.invoke(
+                    "chat",
+                    "--conversation",
+                    identifier,
+                    "--switch-model",
+                    "other:latest",
+                    "--message",
+                    "next",
+                    "--json",
+                    "--development-runtime",
+                )
+            self.assertEqual(status, 0)
+            self.assertEqual(switched.chat_calls[0][0], "other:latest")
+            self.assertEqual(json.loads(stdout)["message_count"], 4)
+
+            cancelled = _FakeClient("unused")
+            cancelled.chat = mock.Mock(side_effect=KeyboardInterrupt)
+            with mock.patch("kilix_ollama.cli.OllamaClient", return_value=cancelled):
+                status, stdout, stderr = self.invoke(
+                    "chat",
+                    "--conversation",
+                    identifier,
+                    "--message",
+                    "cancelled",
+                    "--json",
+                    "--development-runtime",
+                )
+            self.assertEqual(status, 130)
+            self.assertEqual(stdout, "")
+            self.assertIn(f"conversation: {identifier}\n", stderr)
+            self.assertTrue(stderr.endswith("kilix-ollama: cancelled\n"))
+            status, stdout, _stderr = self.invoke(
+                "conversations",
+                "show",
+                identifier,
+                "--json",
+            )
+            self.assertEqual(status, 0)
+            stored = json.loads(stdout)
+            self.assertEqual(stored["model"], "other:latest")
+            self.assertEqual(len(stored["messages"]), 4)
+
+    def test_chat_lifecycle_flags_fail_before_client_construction_without_context(self) -> None:
+        with mock.patch(
+            "kilix_ollama.cli.OllamaClient",
+            side_effect=AssertionError("client constructed"),
+        ):
+            status, stdout, stderr = self.invoke(
+                "chat",
+                "local:latest",
+                "--regenerate",
+            )
+            self.assertEqual(status, 2)
+            self.assertEqual(stdout, "")
+            self.assertIn("--regenerate requires --conversation", stderr)
+            status, stdout, stderr = self.invoke(
+                "chat",
+                "local:latest",
+                "--switch-model",
+                "other:latest",
+            )
+            self.assertEqual(status, 2)
+            self.assertEqual(stdout, "")
+            self.assertIn("--switch-model requires --conversation", stderr)
+            status, stdout, stderr = self.invoke("chat", "local:latest")
+            self.assertEqual(status, 2)
+            self.assertEqual(stdout, "")
+            self.assertIn("interactive chat requires a terminal", stderr)
+
     def test_pull_refuses_before_runtime_or_network_and_states_denominator(self) -> None:
         with mock.patch(
             "kilix_ollama.cli.OllamaClient", side_effect=AssertionError("runtime access")
