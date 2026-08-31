@@ -454,7 +454,7 @@ def _conversations(args: argparse.Namespace) -> int:
     raise RuntimeContractError("unknown conversations subcommand")
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _run(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     if args.command is None:
@@ -598,17 +598,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"backend: {spec.backend}")
                 print(f"argv: {' '.join(spec.argv)}")
             return 0
+    except KilixOllamaError as error:
+        print(f"kilix-ollama: {error}", file=sys.stderr)
+        return 2
+    parser.error(f"unknown command: {args.command}")
+    return 2
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        try:
+            status = _run(argv)
+        except SystemExit:
+            # argparse owns its normal exit status, but its buffered help text
+            # still needs the same closed-pipe boundary as ordinary commands.
+            sys.stdout.flush()
+            raise
+        # Make buffered-pipe failure part of the command contract instead of
+        # leaving it to the interpreter's uncatchable shutdown flush.
+        sys.stdout.flush()
+        return status
     except BrokenPipeError:
         _silence_broken_stdout()
         return 0
     except KeyboardInterrupt:
         print("kilix-ollama: cancelled", file=sys.stderr)
         return 130
-    except KilixOllamaError as error:
-        print(f"kilix-ollama: {error}", file=sys.stderr)
-        return 2
-    parser.error(f"unknown command: {args.command}")
-    return 2
 
 
 __all__ = ["main"]

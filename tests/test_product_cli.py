@@ -5,6 +5,8 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -211,6 +213,31 @@ class ProductCliTests(unittest.TestCase):
         self.assertEqual(status, 130)
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "kilix-ollama: cancelled\n")
+
+    def test_buffered_cli_output_to_closed_pipe_exits_quietly(self) -> None:
+        launcher = Path(__file__).resolve().parents[1] / "kilix-ollama"
+        commands = (
+            ("--help",),
+            ("library",),
+            ("tools", "--json"),
+        )
+        for arguments in commands:
+            with self.subTest(arguments=arguments):
+                read_descriptor, write_descriptor = os.pipe()
+                os.close(read_descriptor)
+                try:
+                    process = subprocess.Popen(
+                        (sys.executable, str(launcher), *arguments),
+                        stdin=subprocess.DEVNULL,
+                        stdout=write_descriptor,
+                        stderr=subprocess.PIPE,
+                        close_fds=True,
+                    )
+                finally:
+                    os.close(write_descriptor)
+                _stdout, stderr = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0)
+                self.assertEqual(stderr, b"")
 
     def test_one_turn_chat_persists_and_json_output_is_structured(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
