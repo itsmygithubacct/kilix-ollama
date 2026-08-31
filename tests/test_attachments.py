@@ -66,6 +66,29 @@ def png_with_raw_rows(rows: bytes) -> bytes:
     )
 
 
+def jpeg_with_huffman_symbol(table_class: int, symbol: int) -> bytes:
+    image = bytearray(jpeg_image())
+    offset = 2
+    while offset + 4 <= len(image):
+        if image[offset] != 0xFF:
+            raise AssertionError("fixture marker is invalid")
+        marker = image[offset + 1]
+        if marker == 0xDA:
+            break
+        length = struct.unpack(">H", image[offset + 2 : offset + 4])[0]
+        end = offset + 2 + length
+        if marker == 0xC4:
+            table = offset + 4
+            while table < end:
+                count = sum(image[table + 1 : table + 17])
+                if image[table] >> 4 == table_class:
+                    image[table + 17] = symbol
+                    return bytes(image)
+                table += 17 + count
+        offset = end
+    raise AssertionError("fixture has no requested Huffman table")
+
+
 class AttachmentStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -106,6 +129,24 @@ class AttachmentStoreTests(unittest.TestCase):
         ):
             with self.subTest(size=len(payload)), self.assertRaises(ConversationError):
                 inspect_image(payload)
+
+    def test_jpeg_huffman_symbols_and_reserved_all_ones_code_are_rejected(self) -> None:
+        for table_class, symbol in ((0, 0xFF), (0, 12), (1, 0x0B), (1, 0x10)):
+            with self.subTest(table_class=table_class, symbol=symbol), self.assertRaises(
+                ConversationError
+            ):
+                inspect_image(jpeg_with_huffman_symbol(table_class, symbol))
+
+        image = bytearray(jpeg_image())
+        marker = image.index(b"\xff\xc4")
+        table = marker + 4
+        image[table + 1 : table + 17] = bytes((2,) + (0,) * 15)
+        image[table + 17 : table + 19] = b"\x00\x01"
+        del image[table + 19 : table + 17 + 12]
+        length = struct.unpack(">H", image[marker + 2 : marker + 4])[0]
+        image[marker + 2 : marker + 4] = struct.pack(">H", length - 10)
+        with self.assertRaises(ConversationError):
+            inspect_image(bytes(image))
 
     def test_snapshot_is_private_content_addressed_path_free_and_deduplicated(self) -> None:
         payload = png_image(3, 2)
@@ -258,6 +299,43 @@ class AttachmentStoreTests(unittest.TestCase):
             (moved_data / "attachments" / digest).read_bytes(),
             payload,
         )
+
+    def test_created_directory_chmod_cannot_follow_replacement_symlink(self) -> None:
+        source = self.selected("source.png", png_image())
+        outside = self.root / "outside"
+        outside.mkdir(mode=0o755)
+        outside.chmod(0o755)
+        original_mode = stat.S_IMODE(outside.stat().st_mode)
+        real_chmod = os.chmod
+        swapped = False
+
+        def swap_before_chmod(
+            path,
+            mode,
+            *,
+            dir_fd=None,
+            follow_symlinks=True,
+        ):
+            nonlocal swapped
+            if path == "data" and not swapped:
+                os.rmdir(path, dir_fd=dir_fd)
+                os.symlink("outside", path, dir_fd=dir_fd)
+                swapped = True
+            return real_chmod(
+                path,
+                mode,
+                dir_fd=dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
+
+        with mock.patch(
+            "kilix_ollama.attachments.os.chmod",
+            side_effect=swap_before_chmod,
+        ), self.assertRaises(ConversationError):
+            self.store.snapshot(source)
+        self.assertTrue(swapped)
+        self.assertEqual(stat.S_IMODE(outside.stat().st_mode), original_mode)
+        self.assertEqual(tuple(outside.iterdir()), ())
 
     def test_tampered_snapshot_and_record_shapes_fail_closed(self) -> None:
         payload = jpeg_image()

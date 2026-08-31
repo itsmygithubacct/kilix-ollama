@@ -224,7 +224,10 @@ def _jpeg_quantization_tables(segment: bytes, tables: set[int]) -> None:
         raise ConversationError("attachment JPEG quantization segment is empty")
 
 
-def _jpeg_huffman_tables(segment: bytes, tables: set[tuple[int, int]]) -> None:
+def _jpeg_huffman_tables(
+    segment: bytes,
+    tables: dict[tuple[int, int], tuple[int, ...]],
+) -> None:
     offset = 0
     while offset < len(segment):
         if offset + 17 > len(segment):
@@ -243,7 +246,20 @@ def _jpeg_huffman_tables(segment: bytes, tables: set[tuple[int, int]]) -> None:
             available = available * 2 - count
             if available < 0:
                 raise ConversationError("attachment JPEG Huffman tree is oversubscribed")
-        tables.add((table_class, identifier))
+        if available == 0:
+            raise ConversationError("attachment JPEG Huffman tree uses an all-ones code")
+        symbols = segment[offset + 17 : offset + 17 + symbol_count]
+        if len(set(symbols)) != len(symbols):
+            raise ConversationError("attachment JPEG Huffman symbols are repeated")
+        if table_class == 0:
+            if any(symbol > 11 for symbol in symbols):
+                raise ConversationError("attachment JPEG DC Huffman symbol is invalid")
+        elif any(
+            (symbol & 0x0F) > 10
+            for symbol in symbols
+        ):
+            raise ConversationError("attachment JPEG AC Huffman symbol is invalid")
+        tables[(table_class, identifier)] = tuple(symbols)
         offset += 17 + symbol_count
     if offset == 0:
         raise ConversationError("attachment JPEG Huffman segment is empty")
@@ -261,7 +277,7 @@ def _jpeg_dimensions(payload: bytes) -> tuple[int, int]:
     frame_marker: int | None = None
     frame_components: dict[int, tuple[int, int, int]] = {}
     quantization_tables: set[int] = set()
-    huffman_tables: set[tuple[int, int]] = set()
+    huffman_tables: dict[tuple[int, int], tuple[int, ...]] = {}
     dc_scanned: set[int] = set()
     scan_count = 0
     marker_count = 1
@@ -388,8 +404,20 @@ def _jpeg_dimensions(payload: bytes) -> tuple[int, int]:
                     required_tables = {(1, ac_table) for _, _, ac_table in selected}
                 else:
                     required_tables = set()
-            if not required_tables <= huffman_tables:
+            if not required_tables.issubset(huffman_tables):
                 raise ConversationError("attachment JPEG scan references a missing Huffman table")
+            if frame_marker in (0xC0, 0xC1) and any(
+                symbol & 0x0F == 0 and symbol not in (0x00, 0xF0)
+                for _identifier, _dc_table, ac_table in selected
+                for symbol in huffman_tables[(1, ac_table)]
+            ):
+                raise ConversationError("attachment sequential JPEG AC table is invalid")
+            if frame_marker == 0xC2 and spectral_start > 0 and high > 0 and any(
+                symbol & 0x0F not in (0, 1)
+                for _identifier, _dc_table, ac_table in selected
+                for symbol in huffman_tables[(1, ac_table)]
+            ):
+                raise ConversationError("attachment progressive JPEG refinement table is invalid")
             if any(
                 frame_components[identifier][2] not in quantization_tables
                 for identifier, _dc, _ac in selected
@@ -517,6 +545,16 @@ _DIRECTORY_FLAGS = (
 )
 
 
+def _directory_component_is_controlled(metadata: os.stat_result, *, uid: int) -> bool:
+    mode = stat.S_IMODE(metadata.st_mode)
+    sticky_root = metadata.st_uid == 0 and bool(mode & stat.S_ISVTX)
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and metadata.st_uid in (0, uid)
+        and (not mode & 0o022 or sticky_root)
+    )
+
+
 def _open_private_directory(path: Path, *, uid: int, create: bool) -> int:
     if not path.is_absolute() or not path.parts or path.parts[0] != path.anchor:
         raise ConversationError("attachment storage path must be absolute")
@@ -535,18 +573,22 @@ def _open_private_directory(path: Path, *, uid: int, create: bool) -> int:
                 if not create:
                     raise ConversationError("attachment directory does not exist")
                 parent = os.fstat(descriptor)
-                if not stat.S_ISDIR(parent.st_mode) or parent.st_uid not in (0, uid):
+                if not _directory_component_is_controlled(parent, uid=uid):
                     raise ConversationError("attachment storage parent is not controlled")
                 os.mkdir(component, mode=0o700, dir_fd=descriptor)
-                os.chmod(component, 0o700, dir_fd=descriptor)
+                os.chmod(
+                    component,
+                    0o700,
+                    dir_fd=descriptor,
+                    follow_symlinks=False,
+                )
                 child = os.open(component, _DIRECTORY_FLAGS, dir_fd=descriptor)
+                os.fchmod(child, 0o700)
                 created = True
             metadata = os.fstat(child)
             mode = stat.S_IMODE(metadata.st_mode)
             if (
-                not stat.S_ISDIR(metadata.st_mode)
-                or metadata.st_uid not in (0, uid)
-                or (metadata.st_uid == uid and mode & 0o022)
+                not _directory_component_is_controlled(metadata, uid=uid)
                 or (created and (metadata.st_uid != uid or mode != 0o700))
                 or (final and (metadata.st_uid != uid or mode != 0o700))
             ):
@@ -559,7 +601,7 @@ def _open_private_directory(path: Path, *, uid: int, create: bool) -> int:
         if descriptor >= 0:
             os.close(descriptor)
         raise
-    except OSError as error:
+    except (NotImplementedError, OSError, ValueError) as error:
         if descriptor >= 0:
             os.close(descriptor)
         raise ConversationError("attachment directory cannot be opened safely") from error
