@@ -387,6 +387,87 @@ class ChatEngineTests(unittest.TestCase):
             no_store.turn(empty.identifier, "image", attachment_paths=(source,))
         self.assertEqual(len(client.install_checks), before_checks)
 
+    def test_rejected_image_turns_publish_no_attachment_snapshot(self) -> None:
+        source = self.root / "private.png"
+        source.write_bytes(png_image(3, 2))
+        attachment_store = AttachmentStore(private_paths(self.root))
+        client = _FakeClient([result("unused")])
+        engine = ChatEngine(client, self.store, attachment_store)  # type: ignore[arg-type]
+        conversation = engine.create(model="local:latest", title="Rejected")
+        original = self.store.load(conversation.identifier)
+
+        for prompt in ("x" * (MAX_MESSAGE_BYTES + 1), "\ud800"):
+            with self.subTest(prompt_length=len(prompt)), self.assertRaises(ConversationError):
+                engine.turn(
+                    conversation.identifier,
+                    prompt,
+                    attachment_paths=(source,),
+                )
+            self.assertFalse(attachment_store.root.exists())
+            self.assertEqual(self.store.load(conversation.identifier), original)
+        self.assertEqual(client.install_checks, [])
+        self.assertEqual(client.chat_calls, [])
+
+        unavailable = _FakeClient([], installed=False)
+        unavailable_engine = ChatEngine(  # type: ignore[arg-type]
+            unavailable,
+            self.store,
+            attachment_store,
+        )
+        with self.assertRaises(RuntimeUnavailable):
+            unavailable_engine.turn(
+                conversation.identifier,
+                "describe",
+                attachment_paths=(source,),
+            )
+        self.assertFalse(attachment_store.root.exists())
+        self.assertEqual(self.store.load(conversation.identifier), original)
+
+        racing = _FakeClient([result("answer")])
+        real_chat = racing.chat
+
+        def race_chat(model, messages, **kwargs):
+            self.store.append(
+                conversation.identifier,
+                (
+                    {"role": "user", "content": "rival"},
+                    {"role": "assistant", "content": "won"},
+                ),
+            )
+            return real_chat(model, messages, **kwargs)
+
+        racing.chat = race_chat  # type: ignore[method-assign]
+        racing_engine = ChatEngine(  # type: ignore[arg-type]
+            racing,
+            self.store,
+            attachment_store,
+        )
+        with self.assertRaises(ConversationError):
+            racing_engine.turn(
+                conversation.identifier,
+                "describe",
+                attachment_paths=(source,),
+            )
+        self.assertFalse(attachment_store.root.exists())
+        after_race = self.store.load(conversation.identifier)
+        self.assertEqual(unavailable.install_checks, ["local:latest"])
+        self.assertEqual(unavailable.chat_calls, [])
+
+        failed_inference = _FakeClient([])
+        failed_engine = ChatEngine(  # type: ignore[arg-type]
+            failed_inference,
+            self.store,
+            attachment_store,
+        )
+        with self.assertRaises(AssertionError):
+            failed_engine.turn(
+                conversation.identifier,
+                "describe",
+                attachment_paths=(source,),
+            )
+        self.assertFalse(attachment_store.root.exists())
+        self.assertEqual(self.store.load(conversation.identifier), after_race)
+
     def test_model_switch_requires_installed_target_before_atomic_mutation(self) -> None:
         client = _FakeClient([])
         engine = ChatEngine(client, self.store)  # type: ignore[arg-type]

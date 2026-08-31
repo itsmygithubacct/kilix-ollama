@@ -391,7 +391,7 @@ class OllamaClientTests(unittest.TestCase):
         )
         for message in invalid:
             with self.subTest(message=list(message)), self.assertRaises(RuntimeContractError):
-                client.chat("local:latest", (message,), check_installed=False)
+                client.chat("local:latest", (message,))
 
         oversized_encoded = "A" * (4 * ((4 * 1024 * 1024 + 2) // 3) + 4)
         with mock.patch(
@@ -401,7 +401,6 @@ class OllamaClientTests(unittest.TestCase):
             client.chat(
                 "local:latest",
                 ({"role": "user", "content": "x", "images": [oversized_encoded]},),
-                check_installed=False,
             )
         self.assertEqual(len(self.upstream.requests), before)
 

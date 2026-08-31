@@ -465,9 +465,13 @@ class ConversationStore:
         self,
         expected: Conversation,
         messages: Iterable[Mapping[str, object]],
+        *,
+        before_commit: Callable[[], None] | None = None,
     ) -> Conversation:
         if not isinstance(expected, Conversation):
             raise ConversationError("expected conversation state is invalid")
+        if before_commit is not None and not callable(before_commit):
+            raise ConversationError("conversation pre-commit action is invalid")
         Conversation.from_record(expected.storage_record())
         replacements = tuple(validate_message(message) for message in messages)
         if len(replacements) > MAX_MESSAGES:
@@ -485,6 +489,8 @@ class ConversationStore:
                 replacements,
             )
             Conversation.from_record(updated.storage_record())
+            if before_commit is not None:
+                before_commit()
             self._write_unlocked(updated, replace=True)
             return updated
 

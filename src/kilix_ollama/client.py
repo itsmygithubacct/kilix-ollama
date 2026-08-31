@@ -360,8 +360,8 @@ class OllamaClient:
         payload: Mapping[str, object],
         on_delta: Callable[[StreamDelta], None] | None,
     ) -> StreamResult:
-        self._authorize(route)
         body = _json_bytes(payload)
+        self._authorize(route)
         connection, response = self._begin("POST", route, body)
         decoder = JSONLinesDecoder()
         accumulator = StreamAccumulator(route=route, request_model=model)
@@ -407,8 +407,6 @@ class OllamaClient:
             raise RuntimeContractError("prompt contains invalid Unicode") from error
         if prompt_bytes > 1024 * 1024:
             raise RuntimeContractError("prompt exceeds its byte limit")
-        if check_installed:
-            self.require_installed(checked_model)
         payload: dict[str, object] = {
             "model": checked_model,
             "prompt": prompt,
@@ -417,6 +415,9 @@ class OllamaClient:
         options = self._options(temperature=temperature, seed=seed, context=context)
         if options:
             payload["options"] = options
+        _json_bytes(payload)
+        if check_installed:
+            self.require_installed(checked_model)
         return self._stream(
             route="/api/generate",
             model=checked_model,
@@ -437,8 +438,6 @@ class OllamaClient:
         check_installed: bool = True,
     ) -> StreamResult:
         checked_model = validate_model_name(model)
-        if check_installed:
-            self.require_installed(checked_model)
         checked_messages = self._messages(messages)
         payload: dict[str, object] = {
             "model": checked_model,
@@ -455,6 +454,9 @@ class OllamaClient:
         options = self._options(temperature=temperature, seed=seed, context=context)
         if options:
             payload["options"] = options
+        _json_bytes(payload)
+        if check_installed:
+            self.require_installed(checked_model)
         return self._stream(
             route="/api/chat",
             model=checked_model,

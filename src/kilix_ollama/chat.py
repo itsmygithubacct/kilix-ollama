@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .attachments import AttachmentStore
+from .attachments import AttachmentStore, PreparedAttachmentBatch
 from .client import OllamaClient, validate_model_name
 from .conversations import Conversation, ConversationStore, validate_message
 from .errors import ConversationError, ToolError
@@ -98,7 +98,17 @@ class ChatEngine:
     def _wire_messages(
         self,
         messages: Sequence[dict[str, object]],
+        prepared: PreparedAttachmentBatch | None = None,
     ) -> list[dict[str, object]]:
+        prepared_records: list[dict[str, object]] | None = None
+        prepared_images: list[str] | None = None
+        if prepared is not None:
+            if self.attachment_store is None:
+                raise ConversationError(
+                    "prepared attachments require the private attachment store"
+                )
+            prepared_records = list(self.attachment_store.prepared_records(prepared))
+            prepared_images = self.attachment_store.wire_prepared(prepared)
         wire: list[dict[str, object]] = []
         for message in messages:
             resolved = dict(message)
@@ -108,7 +118,11 @@ class ChatEngine:
                     raise ConversationError(
                         "conversation attachments require the private attachment store"
                     )
-                resolved["images"] = self.attachment_store.wire_images(attachments)
+                if attachments == prepared_records:
+                    assert prepared_images is not None
+                    resolved["images"] = list(prepared_images)
+                else:
+                    resolved["images"] = self.attachment_store.wire_images(attachments)
             wire.append(resolved)
         return wire
 
@@ -124,6 +138,7 @@ class ChatEngine:
         temperature: float | None,
         seed: int | None,
         context: int | None,
+        prepared: PreparedAttachmentBatch | None = None,
     ) -> ChatTurn:
         declarations = registry.declarations() if registry is not None else ()
         rounds = 0
@@ -133,7 +148,7 @@ class ChatEngine:
         while True:
             result = self.client.chat(
                 conversation.model,
-                self._wire_messages(messages),
+                self._wire_messages(messages, prepared),
                 tools=declarations,
                 temperature=temperature,
                 seed=seed,
@@ -166,7 +181,23 @@ class ChatEngine:
                 messages.append(outcome.message())
         if final is None:
             raise ToolError("chat turn produced no runtime result")
-        committed = self.store.replace_messages(conversation, messages)
+        before_commit: Callable[[], None] | None = None
+        if prepared is not None:
+            if self.attachment_store is None:
+                raise ConversationError(
+                    "prepared attachments require the private attachment store"
+                )
+
+            def publish_prepared() -> None:
+                assert self.attachment_store is not None
+                self.attachment_store.publish_prepared(prepared)
+
+            before_commit = publish_prepared
+        committed = self.store.replace_messages(
+            conversation,
+            messages,
+            before_commit=before_commit,
+        )
         return ChatTurn(
             committed,
             final,
@@ -191,20 +222,22 @@ class ChatEngine:
     ) -> ChatTurn:
         if not isinstance(prompt, str) or not prompt:
             raise ToolError("chat prompt must not be empty")
+        user = validate_message({"role": "user", "content": prompt})
         conversation = self.store.load(conversation_id)
-        user: dict[str, object] = {"role": "user", "content": prompt}
+        prepared: PreparedAttachmentBatch | None = None
         if attachment_paths:
             if self.attachment_store is None:
                 raise ConversationError(
                     "chat attachments require the private attachment store"
                 )
+            prepared = self.attachment_store.prepare_many(attachment_paths)
             user["attachments"] = list(
-                self.attachment_store.snapshot_many(attachment_paths)
+                self.attachment_store.prepared_records(prepared)
             )
-        user_message = validate_message(user)
+            user = validate_message(user)
         messages = conversation.api_messages()
-        messages.append(user_message)
-        self._wire_messages(messages)
+        messages.append(user)
+        self._wire_messages(messages, prepared)
         self.client.require_installed(conversation.model)
         return self._complete(
             conversation,
@@ -216,6 +249,7 @@ class ChatEngine:
             temperature=temperature,
             seed=seed,
             context=context,
+            prepared=prepared,
         )
 
     def regenerate(

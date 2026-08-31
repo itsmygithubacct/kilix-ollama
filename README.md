@@ -135,12 +135,16 @@ target is installed before it changes stored state. Interactive chat also
 accepts `/regenerate`, `/fork`, and `/model MODEL`.
 
 `--attach` accepts up to four explicitly selected PNG/JPEG files for a scripted
-`--message`. The client opens each selection once without following a final
-symlink, enforces per-file and aggregate byte limits plus bounded image
-dimensions/pixels, and copies it into a mode-0600 content-addressed snapshot in
-an owner-only directory. Conversation records retain only typed digest, media,
-size and dimension metadata—never the selected path or filename. Every reuse
-rechecks the snapshot digest and image metadata before runtime contact.
+`--message`. The client opens each source-path component through no-follow
+directory descriptors, enforces per-file and aggregate byte limits plus bounded
+image dimensions/pixels, and retains the validated bytes in memory until the
+turn succeeds. It then copies them through the same descriptor-anchored tree
+into mode-0600 content-addressed snapshots in an owner-only directory before
+committing the conversation. Invalid input, unavailable or failed inference,
+and a stale conversation race publish no new snapshot. Conversation records
+retain only typed digest, media, size and dimension metadata—never the selected
+path or filename. Every reuse rechecks the snapshot digest and image metadata
+before runtime contact.
 Markdown export states the omitted image count and never embeds attachment
 bytes implicitly.
 

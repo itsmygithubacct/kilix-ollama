@@ -81,7 +81,11 @@ class AttachmentStoreTests(unittest.TestCase):
 
     def test_png_and_jpeg_dimensions_are_bounded_and_structurally_checked(self) -> None:
         self.assertEqual(inspect_image(png_image(3, 2)), ("image/png", 3, 2))
-        self.assertEqual(inspect_image(jpeg_image(4, 3)), ("image/jpeg", 4, 3))
+        self.assertEqual(inspect_image(jpeg_image()), ("image/jpeg", 3, 2))
+        self.assertEqual(
+            inspect_image(jpeg_image(progressive=True)),
+            ("image/jpeg", 3, 2),
+        )
 
         corrupt = bytearray(png_image())
         corrupt[-1] ^= 1
@@ -95,6 +99,8 @@ class AttachmentStoreTests(unittest.TestCase):
             bytes(oversized),
             b"GIF89a",
             jpeg_image()[:-2],
+            b"\xff\xd8\xff\xc0\x00\x08\x08\x00\x02\x00\x02\x01\xff\xda\x00\x02\xff\xd9",
+            b"\xff\xd8" + b"\xff\x01" * 4097 + b"\xff\xd9",
             png_with_raw_rows(b"\x00" * 100),
             png_with_raw_rows(b"\x05" + b"\x00" * 16 + b"\x00" + b"\x00" * 16),
         ):
@@ -129,6 +135,11 @@ class AttachmentStoreTests(unittest.TestCase):
         source = self.selected("source.png", png_image())
         symlink = self.root / "link.png"
         symlink.symlink_to(source)
+        real_directory = self.root / "real-directory"
+        real_directory.mkdir()
+        (real_directory / "image.png").write_bytes(png_image())
+        intermediate_symlink = self.root / "linked-directory"
+        intermediate_symlink.symlink_to(real_directory, target_is_directory=True)
         large = self.root / "large.png"
         with large.open("wb") as stream:
             stream.truncate(MAX_ATTACHMENT_BYTES + 1)
@@ -136,6 +147,7 @@ class AttachmentStoreTests(unittest.TestCase):
         os.mkfifo(fifo)
         for path in (
             symlink,
+            intermediate_symlink / "image.png",
             self.root,
             fifo,
             large,
@@ -177,12 +189,21 @@ class AttachmentStoreTests(unittest.TestCase):
         target = self.store.root / digest
         real_link = os.link
 
-        def inject_target(source_path, destination, *, follow_symlinks=True):
+        def inject_target(
+            source_path,
+            destination,
+            *,
+            src_dir_fd=None,
+            dst_dir_fd=None,
+            follow_symlinks=True,
+        ):
             target.write_bytes(b"concurrent owner data")
             target.chmod(0o600)
             return real_link(
                 source_path,
                 destination,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
                 follow_symlinks=follow_symlinks,
             )
 
@@ -193,6 +214,50 @@ class AttachmentStoreTests(unittest.TestCase):
             self.store.snapshot(source)
         self.assertEqual(target.read_bytes(), b"concurrent owner data")
         self.assertEqual(tuple(self.store.root.glob("*.tmp")), ())
+
+    def test_snapshot_root_component_swap_never_redirects_publication(self) -> None:
+        payload = png_image()
+        source = self.selected("source.png", payload)
+        digest = hashlib.sha256(payload).hexdigest()
+        data_dir = self.paths.data_dir
+        moved_data = self.root / "moved-data"
+        outside = self.root / "outside"
+        outside.mkdir(mode=0o700)
+        real_link = os.link
+        swapped = False
+
+        def swap_component(
+            source_name,
+            destination_name,
+            *,
+            src_dir_fd=None,
+            dst_dir_fd=None,
+            follow_symlinks=True,
+        ):
+            nonlocal swapped
+            if not swapped:
+                data_dir.rename(moved_data)
+                data_dir.symlink_to(outside, target_is_directory=True)
+                swapped = True
+            return real_link(
+                source_name,
+                destination_name,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
+
+        with mock.patch(
+            "kilix_ollama.attachments.os.link",
+            side_effect=swap_component,
+        ), self.assertRaises(ConversationError):
+            self.store.snapshot(source)
+        self.assertTrue(swapped)
+        self.assertEqual(tuple(outside.iterdir()), ())
+        self.assertEqual(
+            (moved_data / "attachments" / digest).read_bytes(),
+            payload,
+        )
 
     def test_tampered_snapshot_and_record_shapes_fail_closed(self) -> None:
         payload = jpeg_image()
