@@ -1,9 +1,10 @@
 # Kilix Ollama
 
 Kilix Ollama is a local lifecycle, compatibility, and mediation layer for an
-Ollama runtime managed by Plebian OS. This tree is an unpublished development
-spine for the 0.2.1 line. Its CLI diagnostics perform read-only discovery and
-emit provisional contracts. Its library now includes the candidate runtime
+Ollama runtime managed by Plebian OS. This tree is a published work-branch
+development spine for the 0.2.1 line, not a release-admitted artifact. Its CLI
+diagnostics perform read-only discovery and emit provisional contracts. Its
+library includes the candidate runtime
 supervisor, live private mediation proxy, shared accelerator arbiter, and
 one-shot and persistent Vulkan TTS runners. The CLI now provides an exact
 artifact-free model catalog, one-off prompts, persistent chats, conversation

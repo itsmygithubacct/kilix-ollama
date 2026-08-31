@@ -8,6 +8,11 @@
 - Add bounded strict NDJSON streaming, cross-delta terminal sanitization,
   private atomic conversation persistence, prompt/file/output safety, and
   exact-runtime client admission through the same-UID mediation socket.
+- Bind every protected request to a fresh runtime-version check, enforce exact
+  printable model identity in streamed responses, keep thinking private by
+  default, and close descriptor-relative selected-root races.
+- Give broken output pipes and active user cancellation fixed, quiet command
+  exit contracts.
 - Add four disabled-by-default read-only tools with bounded schemas, explicit
   filesystem selections, per-call approval, and no shell, subprocess, network,
   or write capability.
@@ -31,7 +36,8 @@
 
 ## 0.2.1 — development
 
-- Add the unpublished, model-free application spine.
+- Add the model-free application spine as a development work artifact without
+  release admission.
 - Add fixed runtime layout and launch specifications without exposing a public
   daemon command.
 - Add internal Vulkan/Nouveau discovery with qualification-gated selection.
