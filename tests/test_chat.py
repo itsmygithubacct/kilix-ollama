@@ -294,6 +294,7 @@ class ChatEngineTests(unittest.TestCase):
             [message["content"] for message in tool_turn.conversation.messages],
             ["use a tool", "tool replacement"],
         )
+        completed_install_checks = len(client.install_checks)
 
         incomplete = engine.create(model="local:latest", title="Incomplete")
         self.store.append(
@@ -302,6 +303,7 @@ class ChatEngineTests(unittest.TestCase):
         )
         with self.assertRaises(ConversationError):
             engine.regenerate(incomplete.identifier)
+        self.assertEqual(len(client.install_checks), completed_install_checks)
 
         unfinished_tool = engine.create(model="local:latest", title="Unfinished tool")
         unfinished_tool = self.store.append(
@@ -319,7 +321,18 @@ class ChatEngineTests(unittest.TestCase):
         with self.assertRaises(ConversationError):
             engine.regenerate(unfinished_tool.identifier)
         self.assertEqual(self.store.load(unfinished_tool.identifier), unfinished_tool)
+        self.assertEqual(len(client.install_checks), completed_install_checks)
         self.assertEqual(len(client.chat_calls), 2)
+
+        unavailable_client = _FakeClient([], installed=False)
+        unavailable_engine = ChatEngine(  # type: ignore[arg-type]
+            unavailable_client,
+            self.store,
+        )
+        with self.assertRaises(ConversationError):
+            unavailable_engine.regenerate(unfinished_tool.identifier)
+        self.assertEqual(unavailable_client.install_checks, [])
+        self.assertEqual(unavailable_client.chat_calls, [])
 
     def test_model_switch_requires_installed_target_before_atomic_mutation(self) -> None:
         client = _FakeClient([])

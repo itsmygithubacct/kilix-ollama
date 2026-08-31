@@ -198,7 +198,6 @@ class ChatEngine:
         context: int | None = None,
     ) -> ChatTurn:
         conversation = self.store.load(conversation_id)
-        self.client.require_installed(conversation.model)
         last_user = next(
             (
                 index
@@ -210,6 +209,7 @@ class ChatEngine:
         suffix = conversation.messages[last_user + 1 :] if last_user >= 0 else ()
         if last_user < 0 or not _completed_response_suffix(suffix):
             raise ConversationError("conversation has no completed response to regenerate")
+        self.client.require_installed(conversation.model)
         messages = [dict(message) for message in conversation.messages[: last_user + 1]]
         return self._complete(
             conversation,
