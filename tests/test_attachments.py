@@ -153,7 +153,11 @@ class AttachmentStoreTests(unittest.TestCase):
         source = self.selected("PRIVATE-NAME.png", payload)
         previous_umask = os.umask(0o777)
         try:
-            record = self.store.snapshot(source)
+            with mock.patch(
+                "kilix_ollama.attachments.os.chmod",
+                side_effect=AssertionError("path chmod must not be used"),
+            ):
+                record = self.store.snapshot(source)
         finally:
             os.umask(previous_umask)
         digest = hashlib.sha256(payload).hexdigest()
@@ -300,42 +304,79 @@ class AttachmentStoreTests(unittest.TestCase):
             payload,
         )
 
-    def test_created_directory_chmod_cannot_follow_replacement_symlink(self) -> None:
+    def test_created_directory_permission_repair_refuses_symlink_replacement(self) -> None:
         source = self.selected("source.png", png_image())
         outside = self.root / "outside"
         outside.mkdir(mode=0o755)
         outside.chmod(0o755)
         original_mode = stat.S_IMODE(outside.stat().st_mode)
-        real_chmod = os.chmod
+        real_open = os.open
         swapped = False
 
-        def swap_before_chmod(
+        def swap_before_path_open(
             path,
-            mode,
+            flags,
+            mode=0o777,
             *,
             dir_fd=None,
-            follow_symlinks=True,
         ):
             nonlocal swapped
-            if path == "data" and not swapped:
+            if path == "data" and flags & getattr(os, "O_PATH", 0) and not swapped:
                 os.rmdir(path, dir_fd=dir_fd)
                 os.symlink("outside", path, dir_fd=dir_fd)
                 swapped = True
-            return real_chmod(
+            return real_open(
                 path,
+                flags,
                 mode,
                 dir_fd=dir_fd,
-                follow_symlinks=follow_symlinks,
             )
 
         with mock.patch(
-            "kilix_ollama.attachments.os.chmod",
-            side_effect=swap_before_chmod,
+            "kilix_ollama.attachments.os.open",
+            side_effect=swap_before_path_open,
         ), self.assertRaises(ConversationError):
             self.store.snapshot(source)
         self.assertTrue(swapped)
         self.assertEqual(stat.S_IMODE(outside.stat().st_mode), original_mode)
         self.assertEqual(tuple(outside.iterdir()), ())
+
+    def test_created_directory_permission_repair_refuses_hardlink_replacement(self) -> None:
+        source = self.selected("source.png", png_image())
+        unrelated = self.root / "unrelated"
+        unrelated.write_bytes(b"owner data")
+        unrelated.chmod(0o644)
+        real_open = os.open
+        swapped = False
+
+        def swap_before_path_open(
+            path,
+            flags,
+            mode=0o777,
+            *,
+            dir_fd=None,
+        ):
+            nonlocal swapped
+            if path == "data" and flags & getattr(os, "O_PATH", 0) and not swapped:
+                os.rmdir(path, dir_fd=dir_fd)
+                os.link(
+                    "unrelated",
+                    path,
+                    src_dir_fd=dir_fd,
+                    dst_dir_fd=dir_fd,
+                    follow_symlinks=False,
+                )
+                swapped = True
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch(
+            "kilix_ollama.attachments.os.open",
+            side_effect=swap_before_path_open,
+        ), self.assertRaises(ConversationError):
+            self.store.snapshot(source)
+        self.assertTrue(swapped)
+        self.assertEqual(unrelated.read_bytes(), b"owner data")
+        self.assertEqual(stat.S_IMODE(unrelated.stat().st_mode), 0o644)
 
     def test_tampered_snapshot_and_record_shapes_fail_closed(self) -> None:
         payload = jpeg_image()
