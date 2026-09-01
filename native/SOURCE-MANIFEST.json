@@ -1,0 +1,14 @@
+{
+  "schema": "kilix.ollama.native-source-manifest/v1",
+  "note": "These sources are not built by this repository. They are the source of record for worker binaries that plebian-os builds against the admitted llama.cpp closure and installs into the image. Nothing here compiles them, so this manifest is what makes a drift visible: tests/test_native_worker_source.py fails if a file changes, appears or disappears without this manifest changing with it.",
+  "sources": [
+    {
+      "path": "kilix_tts_worker.cpp",
+      "sha256": "e8c7ecd2d2458962666fdc560b40f5ed754e3e7c126400dd1f914a4bb50dc964",
+      "built_by": "plebian-os",
+      "installed_as": "/usr/lib/plebian-os/ollama/kilix-tts-worker-current",
+      "runtime_closure": "candidate:plebian-os-llama.cpp-b10434-pocket-vulkan-worker-r1",
+      "runtime_constant": "PERSISTENT_TTS_RUNTIME_CLOSURE"
+    }
+  ]
+}
